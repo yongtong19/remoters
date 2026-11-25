@@ -1,11 +1,26 @@
-use std::{collections::HashSet, io::Cursor, sync::Arc};
+use std::{
+    collections::HashSet,
+    time::{Duration, Instant},
+};
 
-use anyhow::{Context, Result, anyhow, ensure};
-use enigo::{Axis, Coordinate, Direction, Enigo, Keyboard, Mouse, Settings};
-use gpui::RenderImage;
-use image::{DynamicImage, ImageFormat, ImageReader, Limits, codecs::jpeg::JpegEncoder};
-use remoters_core::{Button, Desktop, Input, Point};
+use anyhow::{Context, Result, anyhow};
+#[cfg(target_os = "macos")]
+use enigo::Coordinate;
+use enigo::{Axis, Direction, Enigo, Keyboard, Mouse, Settings};
+pub mod display;
+
+#[cfg(target_os = "windows")]
+unsafe extern "C" {
+    fn remoters_move_pointer(x: i32, y: i32) -> bool;
+}
+
+use remoters_core::{Button, Input, Point};
 use xcap::Monitor;
+
+#[cfg(target_os = "macos")]
+mod macos_mouse;
+#[cfg(target_os = "macos")]
+pub use macos_mouse::install_drag_handlers;
 
 pub fn request_host_permissions(view_only: bool) -> Result<()> {
     #[cfg(target_os = "macos")]
@@ -19,22 +34,24 @@ pub fn request_host_permissions(view_only: bool) -> Result<()> {
 
 pub struct NativeDesktop {
     monitor: Monitor,
-    #[cfg(target_os = "macos")]
-    capture: macos::Capture,
+    bounds: (i32, i32, u32, u32),
+    bounds_at: Instant,
     input: Option<Enigo>,
+    #[cfg(target_os = "macos")]
+    middle_mouse: Option<macos_mouse::MiddleMouse>,
     keys: HashSet<u16>,
     buttons: HashSet<Button>,
     scroll_remainder: (i32, i32),
 }
 
 impl NativeDesktop {
-    pub fn new(view_only: bool) -> Result<Self> {
-        let monitor = Monitor::all()?
-            .into_iter()
-            .find(|monitor| monitor.is_primary().unwrap_or(false))
-            .context("No primary display was found.")?;
-        #[cfg(target_os = "macos")]
-        let capture = macos::Capture::new(&monitor)?;
+    pub fn new(view_only: bool, monitor: Monitor) -> Result<Self> {
+        let bounds = (
+            monitor.x()?,
+            monitor.y()?,
+            monitor.width()?,
+            monitor.height()?,
+        );
         let input = if view_only {
             None
         } else {
@@ -47,24 +64,58 @@ impl NativeDesktop {
                     .map_err(|e| anyhow!("Input permission is unavailable: {e}"))?,
             )
         };
+        #[cfg(target_os = "macos")]
+        let middle_mouse = input
+            .as_ref()
+            .map(|input| macos_mouse::MiddleMouse::new(input.get_marker_value()))
+            .transpose()?;
         Ok(Self {
             monitor,
-            #[cfg(target_os = "macos")]
-            capture,
+            bounds,
+            bounds_at: Instant::now(),
             input,
+            #[cfg(target_os = "macos")]
+            middle_mouse,
             keys: HashSet::new(),
             buttons: HashSet::new(),
             scroll_remainder: (0, 0),
         })
     }
 
+    fn monitor_bounds(&mut self) -> Result<(i32, i32, u32, u32)> {
+        if self.bounds_at.elapsed() >= Duration::from_secs(2) {
+            self.bounds = (
+                self.monitor.x()?,
+                self.monitor.y()?,
+                self.monitor.width()?,
+                self.monitor.height()?,
+            );
+            self.bounds_at = Instant::now();
+        }
+        Ok(self.bounds)
+    }
+
     fn move_pointer(&mut self, point: Point) -> Result<()> {
-        if let Some(input) = self.input.as_mut() {
-            let w = self.monitor.width()?;
-            let h = self.monitor.height()?;
-            let x = self.monitor.x()? + map_axis(point.x, w);
-            let y = self.monitor.y()? + map_axis(point.y, h);
-            input.move_mouse(x, y, Coordinate::Abs)?;
+        if self.input.is_some() {
+            let (origin_x, origin_y, w, h) = self.monitor_bounds()?;
+            let x = origin_x + map_axis(point.x, w);
+            let y = origin_y + map_axis(point.y, h);
+            #[cfg(target_os = "macos")]
+            if let Some(middle) = self.middle_mouse.as_mut() {
+                if self.buttons.len() == 1 && self.buttons.contains(&Button::Middle) {
+                    return middle.drag((x, y), &self.keys);
+                }
+                middle.position = (x, y);
+            }
+            #[cfg(target_os = "macos")]
+            if let Some(input) = &mut self.input {
+                input.move_mouse(x, y, Coordinate::Abs)?;
+            }
+            #[cfg(target_os = "windows")]
+            anyhow::ensure!(
+                unsafe { remoters_move_pointer(x, y) },
+                "Windows rejected remote pointer movement."
+            );
         }
         Ok(())
     }
@@ -74,31 +125,17 @@ fn map_axis(normalized: u16, pixels: u32) -> i32 {
     ((u64::from(normalized) * u64::from(pixels.saturating_sub(1)) + 32767) / 65535) as i32
 }
 
-impl Desktop for NativeDesktop {
-    fn frame(&mut self) -> Result<Vec<u8>> {
-        #[cfg(target_os = "macos")]
-        let raw = self.capture.frame()?;
-        #[cfg(target_os = "windows")]
-        let raw = self.monitor.capture_image()?;
-        let image = DynamicImage::ImageRgba8(raw)
-            .thumbnail(1440, 1000)
-            .into_rgb8();
-        let mut jpeg = Vec::new();
-        JpegEncoder::new_with_quality(&mut jpeg, 68).encode_image(&image)?;
-        Ok(jpeg)
-    }
-
-    fn input(&mut self, event: Input) -> Result<()> {
+impl NativeDesktop {
+    pub fn input(&mut self, event: Input) -> Result<()> {
         match event {
             Input::Move(at) => self.move_pointer(at)?,
             Input::Button { at, button, down } => {
                 self.move_pointer(at)?;
-                if let Some(input) = self.input.as_mut() {
-                    if down && !self.buttons.contains(&button) {
-                        input.button(native_button(button), Direction::Press)?;
+                if self.input.is_some() && down != self.buttons.contains(&button) {
+                    self.button(button, down)?;
+                    if down {
                         self.buttons.insert(button);
-                    } else if !down && self.buttons.contains(&button) {
-                        input.button(native_button(button), Direction::Release)?;
+                    } else {
                         self.buttons.remove(&button);
                     }
                 }
@@ -139,7 +176,29 @@ impl Desktop for NativeDesktop {
         Ok(())
     }
 
+    fn button(&mut self, button: Button, down: bool) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        if button == Button::Middle
+            && let Some(middle) = self.middle_mouse.as_ref()
+        {
+            return middle.button(down, &self.keys);
+        }
+        if let Some(input) = self.input.as_mut() {
+            let direction = if down {
+                Direction::Press
+            } else {
+                Direction::Release
+            };
+            input.button(native_button(button), direction)?;
+        }
+        Ok(())
+    }
+
     fn release(&mut self) {
+        #[cfg(target_os = "macos")]
+        if self.buttons.contains(&Button::Middle) && self.button(Button::Middle, false).is_ok() {
+            self.buttons.remove(&Button::Middle);
+        }
         if let Some(input) = self.input.as_mut() {
             self.keys
                 .retain(|code| native_key(input, *code, Direction::Release).is_err());
@@ -153,6 +212,19 @@ impl Desktop for NativeDesktop {
     }
 }
 
+impl Drop for NativeDesktop {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+pub fn primary_monitor() -> Result<Monitor> {
+    Monitor::all()?
+        .into_iter()
+        .find(|monitor| monitor.is_primary().unwrap_or(false))
+        .context("No primary display was found.")
+}
+
 fn native_button(button: Button) -> enigo::Button {
     match button {
         Button::Left => enigo::Button::Left,
@@ -162,32 +234,12 @@ fn native_button(button: Button) -> enigo::Button {
 }
 
 pub struct VideoFrame {
-    pub image: Arc<RenderImage>,
+    #[cfg(target_os = "windows")]
+    pub surface: gpui::ID3D11Texture2D,
+    #[cfg(target_os = "macos")]
+    pub surface: screencapturekit::cv::CVPixelBuffer,
     pub width: u32,
     pub height: u32,
-}
-
-pub fn decode_frame(bytes: Vec<u8>) -> Result<VideoFrame> {
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), ImageFormat::Jpeg);
-    let mut limits = Limits::default();
-    limits.max_image_width = Some(4096);
-    limits.max_image_height = Some(4096);
-    limits.max_alloc = Some(64 * 1024 * 1024);
-    reader.limits(limits);
-    let mut image = reader.decode()?.into_rgba8();
-    let (width, height) = image.dimensions();
-    ensure!(width > 0 && height > 0, "The host sent an empty frame.");
-    // GPUI expects BGRA pixels in its sprite atlas.
-    for pixel in image.pixels_mut() {
-        pixel.0.swap(0, 2);
-    }
-    Ok(VideoFrame {
-        image: Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(
-            image
-        )])),
-        width,
-        height,
-    })
 }
 
 #[cfg(target_os = "windows")]
@@ -208,14 +260,7 @@ fn native_key(input: &mut Enigo, code: u16, direction: Direction) -> Result<bool
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use anyhow::{Context, Result, ensure};
-    use image::RgbaImage;
-    use screencapturekit::{
-        prelude::{SCContentFilter, SCShareableContent, SCStreamConfiguration},
-        screenshot_manager::{CGImageExt, SCScreenshotManager},
-    };
-    use xcap::Monitor;
-
+    use anyhow::{Result, ensure};
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {
         fn CGPreflightScreenCaptureAccess() -> bool;
@@ -230,45 +275,6 @@ mod macos {
             "Allow screen recording in System Settings, then reopen Remoters."
         );
         Ok(())
-    }
-
-    pub struct Capture {
-        filter: SCContentFilter,
-        configuration: SCStreamConfiguration,
-    }
-
-    impl Capture {
-        pub fn new(monitor: &Monitor) -> Result<Self> {
-            let id = monitor.id()?;
-            let display = SCShareableContent::get()?
-                .displays()
-                .into_iter()
-                .find(|d| d.display_id() == id)
-                .context("The primary display is unavailable to ScreenCaptureKit.")?;
-            let (width, height) = (display.width().max(1), display.height().max(1));
-            let scale = (1440.0 / f64::from(width))
-                .min(1000.0 / f64::from(height))
-                .min(1.0);
-            let filter = SCContentFilter::create()
-                .with_display(&display)
-                .with_excluding_windows(&[])
-                .build()?;
-            let configuration = SCStreamConfiguration::new()
-                .with_width((f64::from(width) * scale).round().max(1.0) as u32)
-                .with_height((f64::from(height) * scale).round().max(1.0) as u32)
-                .with_shows_cursor(true);
-            Ok(Self {
-                filter,
-                configuration,
-            })
-        }
-
-        pub fn frame(&self) -> Result<RgbaImage> {
-            let frame = SCScreenshotManager::capture_image(&self.filter, &self.configuration)?;
-            let (width, height) = (frame.width().try_into()?, frame.height().try_into()?);
-            RgbaImage::from_raw(width, height, frame.rgba_data()?)
-                .context("ScreenCaptureKit returned an invalid pixel buffer.")
-        }
     }
 
     pub fn scan_code(code: u16) -> Option<u16> {

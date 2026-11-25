@@ -1,8 +1,9 @@
-pub mod lan;
+pub mod network;
 mod protocol;
-mod session;
+pub mod session;
+pub mod video;
+mod webrtc;
 
 pub use protocol::{Button, Input, Point};
-pub use session::{Desktop, Viewer};
 
 pub const DEFAULT_PORT: u16 = 47821;

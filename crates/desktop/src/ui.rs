@@ -1,9 +1,9 @@
 use gpui::{
-    AnyElement, App, Bounds, ClipboardItem, Context, Corners, Div, FontWeight, MouseButton, Window,
-    canvas, div, point, prelude::*, px, rgb, size,
+    AnyElement, App, Bounds, ClipboardItem, Context, Div, FontWeight, MouseButton, Window, canvas,
+    div, point, prelude::*, px, rgb, size,
 };
 use gpui_component::{
-    Disableable, Sizable, Theme, ThemeMode, TitleBar,
+    Disableable, IconName, Sizable, Theme, ThemeMode, TitleBar,
     button::{Button, ButtonCustomVariant, ButtonVariants},
     checkbox::Checkbox,
     input::Input,
@@ -23,6 +23,11 @@ const ACCENT_LIGHT: u32 = 0xE3F1E7;
 const SCREEN: u32 = 0x102923;
 const SCREEN_LINE: u32 = 0x31554A;
 const SCREEN_INK: u32 = 0xC4DFD3;
+const SESSION_BACKGROUND: u32 = 0x101614;
+const SESSION_CHROME: u32 = 0x1B2520;
+const SESSION_BORDER: u32 = 0x34443B;
+const SESSION_INK: u32 = 0xEEF5F0;
+const SESSION_MUTED: u32 = 0xAFC1B6;
 
 pub fn configure_theme(cx: &mut App) {
     Theme::change(ThemeMode::Light, None, cx);
@@ -46,42 +51,49 @@ pub fn configure_theme(cx: &mut App) {
 
 impl Render for Desktop {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let narrow = f32::from(window.viewport_size().width) < 915.0;
-        let sidebar_width = if narrow { 172. } else { 210. };
-        let padding = if narrow { 22. } else { 36. };
-        let content = match (self.role, self.viewer.as_ref(), self.sharing.is_some()) {
-            (Role::Connect, Some(viewer), _) => self.session_panel(viewer, cx).into_any_element(),
-            (Role::Connect, None, _) => self.connect_panel(narrow, cx).into_any_element(),
-            (Role::Share, _, true) => self.invitation(narrow, cx).into_any_element(),
-            (Role::Share, _, false) => self.share_panel(narrow, cx).into_any_element(),
-        };
-
-        div()
+        let fullscreen = window.is_fullscreen();
+        let root = div()
             .size_full()
             .flex()
             .flex_col()
             .bg(rgb(BACKGROUND))
             .text_color(rgb(INK))
-            .child(title_bar())
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .child(self.sidebar(sidebar_width, cx))
-                    .child(
-                        div()
-                            .id("workspace")
-                            .flex_1()
-                            .min_w_0()
-                            .min_h_0()
-                            .flex()
-                            .flex_col()
-                            .overflow_y_scroll()
-                            .p(px(padding))
-                            .child(content),
-                    ),
-            )
+            .when(self.viewer.is_none() || !fullscreen, |root| {
+                root.child(title_bar())
+            });
+
+        if let Some(viewer) = &self.viewer {
+            return root.child(self.session_panel(viewer, fullscreen, cx));
+        }
+
+        let narrow = f32::from(window.viewport_size().width) < 915.0;
+        let sidebar_width = if narrow { 172. } else { 210. };
+        let padding = if narrow { 22. } else { 36. };
+        let content = match (self.role, self.sharing.is_some()) {
+            (Role::Connect, _) => self.connect_panel(narrow, cx),
+            (Role::Share, true) => self.invitation(narrow, cx),
+            (Role::Share, false) => self.share_panel(narrow, cx),
+        };
+
+        root.child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .child(self.sidebar(sidebar_width, cx))
+                .child(
+                    div()
+                        .id("workspace")
+                        .flex_1()
+                        .min_w_0()
+                        .min_h_0()
+                        .flex()
+                        .flex_col()
+                        .overflow_y_scroll()
+                        .p(px(padding))
+                        .child(content),
+                ),
+        )
     }
 }
 
@@ -188,7 +200,7 @@ impl Desktop {
                     .large()
                     .w_full()
                     .label("Connect")
-                    .on_click(cx.listener(|desktop, _, _, cx| desktop.connect(cx))),
+                    .on_click(cx.listener(|desktop, _, window, cx| desktop.connect(window, cx))),
             );
         page(
             "Connect to a device",
@@ -236,6 +248,28 @@ impl Desktop {
                             .child(field("Port", Input::new(&self.port).large().w_full())),
                     ),
             )
+            .child(field(
+                "Display",
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Select::new(&self.display).large().w_full()),
+                    )
+                    .child(
+                        Button::new("refresh-displays")
+                            .flex_none()
+                            .label("Refresh")
+                            .large()
+                            .on_click(cx.listener(|desktop, _, window, cx| {
+                                desktop.refresh_displays(window, cx)
+                            })),
+                    ),
+            ))
             .child(
                 div()
                     .flex()
@@ -413,7 +447,42 @@ impl Desktop {
         })
     }
 
-    fn session_panel(&self, viewer: &Viewer, cx: &mut Context<Self>) -> Div {
+    fn session_panel(&self, viewer: &Viewer, fullscreen: bool, cx: &mut Context<Self>) -> Div {
+        div()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .relative()
+            .flex()
+            .bg(rgb(SESSION_BACKGROUND))
+            .text_color(rgb(SESSION_INK))
+            .child(if let Some(frame) = &viewer.frame {
+                self.video(frame, cx)
+            } else {
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap_3()
+                    .text_color(rgb(SESSION_MUTED))
+                    .child(monitor_mark(22., 14., SESSION_MUTED))
+                    .child("Waiting for the remote display…")
+                    .into_any_element()
+            })
+            .child(
+                div()
+                    .absolute()
+                    .top(px(8.))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(self.session_menu(viewer, fullscreen, cx)),
+            )
+    }
+
+    fn session_menu(&self, viewer: &Viewer, fullscreen: bool, cx: &mut Context<Self>) -> Div {
         let ready = viewer.frame.is_some();
         let mode = if self.controlling {
             "Controlling"
@@ -424,30 +493,74 @@ impl Desktop {
         } else {
             "View only"
         };
-        let toolbar = div()
+        let open = self.session_menu_open;
+        let toggle = session_button("session-menu-toggle", cx)
+            .small()
+            .label(if self.controlling {
+                "Controlling"
+            } else {
+                "Session"
+            })
+            .icon(if open {
+                IconName::ChevronUp
+            } else {
+                IconName::ChevronDown
+            })
+            .on_click(cx.listener(|desktop, _, window, cx| {
+                desktop.session_menu_open = !desktop.session_menu_open;
+                if desktop.controlling {
+                    window.focus(&desktop.remote_focus);
+                }
+                cx.notify();
+            }));
+
+        if !open {
+            return div().occlude().rounded_lg().shadow_md().child(toggle);
+        }
+
+        div()
+            .occlude()
+            .on_mouse_down_out(cx.listener(|desktop, _, _, cx| {
+                desktop.session_menu_open = false;
+                cx.notify();
+            }))
+            .w(px(378.))
             .flex()
-            .items_center()
-            .justify_between()
-            .gap_2()
+            .flex_col()
+            .gap_3()
+            .p_3()
+            .rounded_xl()
+            .shadow_lg()
+            .bg(rgb(SESSION_CHROME))
+            .border_1()
+            .border_color(rgb(SESSION_BORDER))
+            .child(div().flex().items_center().justify_center().child(toggle))
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .gap_1()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .text_size(px(25.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Remote session"),
-                    )
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .text_xs()
+                    .text_color(rgb(SESSION_MUTED))
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(muted(viewer.address.to_string()).font_family("monospace"))
-                            .child(pill(mode, ready)),
+                            .child(
+                                div()
+                                    .size(px(7.))
+                                    .rounded_full()
+                                    .bg(rgb(if self.controlling { 0x77D8A3 } else { 0x9DAEA3 })),
+                            )
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(mode))
+                            .child(viewer.address.to_string()),
+                    )
+                    .children(
+                        viewer.frame.as_ref().map(|frame| {
+                            div().child(format!("{} × {}", frame.width, frame.height))
+                        }),
                     ),
             )
             .child(
@@ -455,10 +568,30 @@ impl Desktop {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .flex_none()
-                    .when(ready && viewer.can_control, |el| {
-                        el.child(
+                    .when(ready, |row| {
+                        row.child(
+                            session_button("session-fullscreen", cx)
+                                .small()
+                                .label(if fullscreen {
+                                    "Exit full screen"
+                                } else {
+                                    "Full screen"
+                                })
+                                .on_click(cx.listener(|desktop, _, window, cx| {
+                                    desktop.session_menu_open = false;
+                                    desktop.screen_bounds.set(None);
+                                    window.toggle_fullscreen();
+                                    if desktop.controlling {
+                                        window.focus(&desktop.remote_focus);
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .when(ready && viewer.can_control, |row| {
+                        row.child(
                             Button::new("take-control")
+                                .small()
                                 .primary()
                                 .label(if self.controlling {
                                     "Release input"
@@ -466,6 +599,7 @@ impl Desktop {
                                     "Take control"
                                 })
                                 .on_click(cx.listener(|desktop, _, window, cx| {
+                                    desktop.session_menu_open = false;
                                     if desktop.controlling {
                                         desktop.release(window, cx);
                                     } else {
@@ -477,7 +611,8 @@ impl Desktop {
                         )
                     })
                     .child(
-                        Button::new("disconnect")
+                        session_button("disconnect", cx)
+                            .small()
                             .label(if ready { "Disconnect" } else { "Cancel" })
                             .on_click(cx.listener(|desktop, _, window, cx| {
                                 desktop.finish_viewer(window);
@@ -485,34 +620,20 @@ impl Desktop {
                                 cx.notify();
                             })),
                     ),
-            );
-        div()
-            .flex_1()
-            .min_h(px(350.))
-            .w_full()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(toolbar)
-            .when(self.controlling, |el| {
-                el.child(muted(
-                    "Press Ctrl + Alt / Option + Esc to release keyboard and mouse.",
+            )
+            .when(self.controlling, |menu| {
+                menu.child(div().text_xs().text_color(rgb(SESSION_MUTED)).child(
+                    if cfg!(target_os = "macos") {
+                        "Ctrl + Option + Esc to release input"
+                    } else {
+                        "Ctrl + Alt + Esc to release input"
+                    },
                 ))
-            })
-            .child(if let Some(frame) = &viewer.frame {
-                self.video(frame, cx)
-            } else {
-                preview_panel(
-                    "Waiting for the host",
-                    "The remote display will appear here.",
-                )
-                .flex_1()
-                .into_any_element()
             })
     }
 
     fn video(&self, frame: &crate::platform::VideoFrame, cx: &mut Context<Self>) -> AnyElement {
-        let image = frame.image.clone();
+        let surface = frame.surface.clone();
         let dimensions = (frame.width as f32, frame.height as f32);
         let capture_bounds = self.screen_bounds.clone();
         let mut surface = div()
@@ -521,8 +642,7 @@ impl Desktop {
             .min_h_0()
             .w_full()
             .relative()
-            .rounded(px(17.))
-            .bg(rgb(SCREEN))
+            .bg(rgb(SESSION_BACKGROUND))
             .overflow_hidden()
             .track_focus(&self.remote_focus)
             .child(
@@ -538,13 +658,20 @@ impl Desktop {
                                     (bounds.size.width - fitted.width) / 2.0,
                                     (bounds.size.height - fitted.height) / 2.0,
                                 );
-                            let _ = window.paint_image(
-                                Bounds::new(origin, fitted),
-                                Corners::default(),
-                                image,
-                                0,
-                                false,
-                            );
+                            #[cfg(target_os = "windows")]
+                            window.paint_surface(Bounds::new(origin, fitted), surface);
+                            #[cfg(target_os = "macos")]
+                            {
+                                use core_foundation::base::TCFType;
+                                // SAFETY: The capture wrapper owns this CVPixelBuffer.
+                                // GPUI needs a retained reference to the same IOSurface.
+                                let buffer = unsafe {
+                                    core_video::pixel_buffer::CVPixelBuffer::wrap_under_get_rule(
+                                        surface.as_ptr().cast(),
+                                    )
+                                };
+                                window.paint_surface(Bounds::new(origin, fitted), buffer);
+                            }
                         }
                     },
                 )
@@ -607,6 +734,16 @@ impl Desktop {
         }
         surface.into_any_element()
     }
+}
+
+fn session_button(id: &'static str, cx: &App) -> Button {
+    Button::new(id).custom(
+        ButtonCustomVariant::new(cx)
+            .color(rgb(0x2A3830).into())
+            .foreground(rgb(SESSION_INK).into())
+            .hover(rgb(0x3A4A40).into())
+            .active(rgb(0x45584B).into()),
+    )
 }
 
 fn page(title: &str, description: impl Into<gpui::SharedString>) -> Div {

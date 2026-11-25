@@ -5,11 +5,13 @@ use std::{
     collections::HashSet,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     rc::Rc,
-    sync::mpsc::{Receiver, channel},
-    time::Duration,
+    sync::{
+        Arc,
+        mpsc::{Receiver, channel},
+    },
 };
 
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Context as _, Result, anyhow, ensure};
 use gpui::{
     App, Application, Bounds, Context, Entity, FocusHandle, Keystroke, Modifiers, Pixels,
     ScrollDelta, SharedString, Window, WindowBounds, WindowOptions, prelude::*, px, size,
@@ -17,12 +19,19 @@ use gpui::{
 use gpui_component::{IndexPath, Root, TitleBar, input::InputState, select::SelectState};
 use remoters_core::{
     Button, DEFAULT_PORT, Input, Point,
-    lan::{self, Host, HostEvent, Pairing},
+    network::{self, Pairing},
 };
+use tokio::sync::Notify;
 
+mod codec;
+mod metrics;
 mod platform;
+mod sharing;
 mod ui;
 mod viewer;
+
+use platform::display::{self, DisplayChoice};
+use sharing::HostEvent;
 
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
 enum Role {
@@ -32,9 +41,10 @@ enum Role {
 }
 
 struct Sharing {
-    host: Host,
+    host: sharing::Host,
     events: Receiver<HostEvent>,
     peer: Option<SocketAddr>,
+    _display: Option<display::VirtualDisplay>,
 }
 
 struct Viewer {
@@ -49,6 +59,7 @@ struct Desktop {
     address: Entity<InputState>,
     code: Entity<InputState>,
     local_ip: Entity<SelectState<Vec<SharedString>>>,
+    display: Entity<SelectState<Vec<DisplayChoice>>>,
     port: Entity<InputState>,
     view_only: bool,
     sharing: Option<Sharing>,
@@ -56,13 +67,25 @@ struct Desktop {
     remote_focus: FocusHandle,
     screen_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     controlling: bool,
+    session_menu_open: bool,
     pressed_buttons: HashSet<Button>,
     modifiers: [bool; 4],
     status: Option<(String, bool)>,
     reveal: bool,
+    wake: Arc<Notify>,
 }
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    if std::env::args_os().nth(1).as_deref()
+        == Some(std::ffi::OsStr::new("--virtual-display-worker"))
+    {
+        if let Err(error) = display::virtual_display_worker() {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     Application::new()
         .with_assets(gpui_component_assets::Assets)
         .run(|app: &mut App| {
@@ -86,6 +109,8 @@ fn main() {
                 },
             )
             .expect("open the Remoters window");
+            #[cfg(target_os = "macos")]
+            platform::install_drag_handlers();
             app.activate(true);
             app.on_window_closed(|app| {
                 if app.windows().is_empty() {
@@ -108,22 +133,30 @@ impl Desktop {
         let local_ip = cx
             .new(|cx| SelectState::new(local_addresses(), Some(IndexPath::default()), window, cx));
 
+        let display = cx.new(|cx| {
+            SelectState::new(
+                display::display_choices(),
+                Some(IndexPath::default()),
+                window,
+                cx,
+            )
+        });
         cx.observe_window_activation(window, |desktop, window, cx| {
             if desktop.controlling && !window.is_window_active() {
                 desktop.release(window, cx);
             }
         })
         .detach();
+        let wake = Arc::new(Notify::new());
+        let ui_wake = wake.clone();
         cx.spawn_in(window, async move |handle, cx| {
             loop {
-                let active = handle.update_in(cx, |desktop, window, cx| {
+                ui_wake.notified().await;
+                let Ok(()) = handle.update_in(cx, |desktop, window, cx| {
                     desktop.poll(window, cx);
-                    desktop.viewer.is_some() || desktop.sharing.is_some()
-                });
-                let Ok(active) = active else { break };
-                cx.background_executor()
-                    .timer(Duration::from_millis(if active { 33 } else { 150 }))
-                    .await;
+                }) else {
+                    break;
+                };
             }
         })
         .detach();
@@ -133,6 +166,7 @@ impl Desktop {
             address,
             code,
             local_ip,
+            display,
             port,
             view_only: false,
             sharing: None,
@@ -140,10 +174,12 @@ impl Desktop {
             remote_focus: cx.focus_handle(),
             screen_bounds: Default::default(),
             controlling: false,
+            session_menu_open: false,
             pressed_buttons: HashSet::new(),
             modifiers: [false; 4],
             status: None,
             reveal: false,
+            wake,
         }
     }
 
@@ -151,13 +187,13 @@ impl Desktop {
         self.sharing.is_none() && self.viewer.is_none()
     }
 
-    fn connect(&mut self, cx: &mut Context<Self>) {
+    fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result: Result<Viewer> = (|| {
-            let address = lan::endpoint(&self.address.read(cx).value())?;
+            let address = network::endpoint(&self.address.read(cx).value())?;
             let pairing = Pairing::parse(&self.code.read(cx).value())?;
             Ok(Viewer {
                 address,
-                connection: viewer::Connection::start(address, pairing)?,
+                connection: viewer::Connection::start(address, pairing, self.wake.clone(), window)?,
                 can_control: false,
                 frame: None,
             })
@@ -190,19 +226,30 @@ impl Desktop {
                 .map_err(|_| anyhow!("Enter a port from 1 to 65535."))?;
             ensure!(port > 0, "Enter a port from 1 to 65535.");
             platform::request_host_permissions(view_only)?;
+            let source = self
+                .display
+                .read(cx)
+                .selected_value()
+                .copied()
+                .context("Select a display.")?;
+            let (monitor, virtual_display) = display::open(source)?;
             let (sender, events) = channel();
-            let host = Host::start(
+            let host_wake = self.wake.clone();
+            let host = sharing::Host::start(
                 SocketAddrV4::new(address, port),
                 view_only,
-                move || platform::NativeDesktop::new(view_only),
+                codec::desktop_format(&monitor, virtual_display.is_some())?,
+                monitor.id()?,
                 move |event| {
                     let _ = sender.send(event);
+                    host_wake.notify_one();
                 },
             )?;
             Ok(Sharing {
                 host,
                 events,
                 peer: None,
+                _display: virtual_display,
             })
         })();
         match result {
@@ -223,6 +270,18 @@ impl Desktop {
                 .and_then(|prior| addresses.iter().position(|ip| *ip == prior))
                 .unwrap_or(0);
             state.set_items(addresses, window, cx);
+            state.set_selected_index(Some(IndexPath::default().row(row)), window, cx);
+        });
+    }
+
+    fn refresh_displays(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.display.update(cx, |state, cx| {
+            let prior = state.selected_value().copied();
+            let displays = display::display_choices();
+            let row = prior
+                .and_then(|prior| displays.iter().position(|choice| choice.source == prior))
+                .unwrap_or(0);
+            state.set_items(displays, window, cx);
             state.set_selected_index(Some(IndexPath::default().row(row)), window, cx);
         });
     }
@@ -249,9 +308,7 @@ impl Desktop {
                     Err(err) => (format!("{err:#}"), true),
                 });
             } else if let Some(frame) = viewer.connection.take_frame() {
-                if let Some(previous) = viewer.frame.replace(frame) {
-                    let _ = window.drop_image(previous.image);
-                }
+                viewer.frame = Some(frame);
                 changed = true;
             }
         }
@@ -285,12 +342,11 @@ impl Desktop {
     }
 
     fn finish_viewer(&mut self, window: &mut Window) {
-        if let Some(viewer) = self.viewer.take() {
-            if let Some(frame) = viewer.frame {
-                let _ = window.drop_image(frame.image);
-            }
+        if self.viewer.take().is_some() && window.is_fullscreen() {
+            window.toggle_fullscreen();
         }
         self.controlling = false;
+        self.session_menu_open = false;
         self.pressed_buttons.clear();
         self.modifiers = [false; 4];
         self.screen_bounds.set(None);
@@ -441,7 +497,7 @@ fn local_addresses() -> Vec<SharedString> {
         .unwrap_or_default()
         .into_iter()
         .filter_map(|interface| match interface.ip() {
-            std::net::IpAddr::V4(ip) if lan::is_local(ip) && !ip.is_loopback() => Some(ip),
+            std::net::IpAddr::V4(ip) if network::is_local(ip) && !ip.is_loopback() => Some(ip),
             _ => None,
         })
         .collect();

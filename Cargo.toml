@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/core", "crates/desktop"]
+exclude = ["vendor/gpui"]
 resolver = "2"
 
 [workspace.package]
@@ -11,3 +12,6 @@ publish = false
 [workspace.dependencies]
 anyhow = "1.0"
 remoters-core = { path = "crates/core" }
+
+[patch.crates-io]
+gpui = { path = "vendor/gpui" }
