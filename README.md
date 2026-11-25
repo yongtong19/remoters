@@ -25,7 +25,7 @@ macOS 14 或更新版本作为被控端时，需要在系统设置中允许屏�
 
 ## 构建
 
-Windows 或 macOS 使用 Rust 1.92 或更新版本。Windows 需要 MSVC C++ 构建工具，macOS 需要 Xcode 的 Swift 工具链和 macOS SDK。
+Windows 或 macOS 使用 Rust 1.92 或更新版本。Windows 需要 MSVC C++ 构建工具和带有 FXC 的 Windows SDK。若 SDK 装在其他目录，构建前将 `GPUI_FXC_PATH` 指向 x64 的 `fxc.exe`。macOS 需要 Xcode 的 Swift 工具链和 macOS SDK。
 
 ```sh
 cargo test --workspace --locked
