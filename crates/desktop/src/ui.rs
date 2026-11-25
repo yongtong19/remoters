@@ -107,7 +107,7 @@ fn title_bar() -> TitleBar {
                     div()
                         .text_sm()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child("LAN Remote"),
+                        .child("Remoters"),
                 ),
         )
         .child(div().pr_3().child(pill("Local network", false)))
@@ -571,7 +571,7 @@ impl Desktop {
                         if let Some(at) =
                             desktop.coordinates(event.position, !desktop.pressed_buttons.is_empty())
                         {
-                            desktop.send(lan_remote_core::Input::Move(at), window, cx);
+                            desktop.send(remoters_core::Input::Move(at), window, cx);
                         }
                     }
                 }),
@@ -776,7 +776,7 @@ fn share_help() -> Div {
                 .font_weight(FontWeight::SEMIBOLD)
                 .child("On the guest device"),
         )
-        .child(muted("Open LAN Remote and select Connect."))
+        .child(muted("Open Remoters and select Connect."))
         .child(muted(
             "Enter the host address and pairing code from this screen.",
         ))

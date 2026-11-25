@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::Result;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use lan_remote_core::{
+use remoters_core::{
     Desktop, Input,
     lan::{self, Host, Pairing},
 };

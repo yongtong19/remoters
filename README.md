@@ -1,4 +1,4 @@
-# LAN Remote
+# Remoters
 
 Mac 和 Windows 共用一套 Rust 桌面客户端。两端都有 **Connect**（主控）和 **Share**（被控）入口，可在同一局域网内通过 IPv4 直连。
 
@@ -15,7 +15,7 @@ macOS 14 或更新版本作为被控端时，需要在系统设置中允许屏�
 
 | 部分 | 代码与职责 |
 | --- | --- |
-| `crates/remote-core` | Rust。封包、配对、屏幕会话、键鼠事件，以及 TCP/TLS 直连。 |
+| `crates/core`（`remoters-core`） | Rust。封包、配对、屏幕会话、键鼠事件，以及 TCP/TLS 直连。 |
 | `crates/desktop` | Rust + GPUI。Mac、Windows 共用同一个 UI 和主控/被控逻辑。 |
 | 平台适配 | macOS 用 ScreenCaptureKit，Windows 用 XCap 采集主屏。两端通过 Enigo 注入键鼠，并按系统转换坐标和键位。 |
 
@@ -29,17 +29,17 @@ Windows 或 macOS 使用 Rust 1.92 或更新版本。Windows 需要 MSVC C++ 构
 
 ```sh
 cargo test --workspace --locked
-cargo build --release --locked -p lan-remote
+cargo build --release --locked -p remoters
 ```
 
-Windows 的程序在 `target/release/lan-remote.exe`。在 macOS 上可将构建结果打包为本地签名的应用，以便授予系统权限。
+Windows 的程序在 `target/release/remoters.exe`。在 macOS 上可将构建结果打包为本地签名的应用，以便授予系统权限。
 
 ```sh
 bash packaging/macos.sh
-open target/release/LanRemote.app
+open target/release/Remoters.app
 ```
 
-提交和拉取请求会自动构建 [Windows x64](https://github.com/yongtong19/lan-remote/actions/workflows/desktop.yml)。日常在本机验证 Mac。需要 Apple Silicon 构建产物时，可手动运行 [macOS 工作流](https://github.com/yongtong19/lan-remote/actions/workflows/macos.yml)。
+提交和拉取请求会自动构建 [Windows x64](https://github.com/yongtong19/remoters/actions/workflows/desktop.yml)。日常在本机验证 Mac。需要 Apple Silicon 构建产物时，可手动运行 [macOS 工作流](https://github.com/yongtong19/remoters/actions/workflows/macos.yml)。
 
 ## 后续阶段
 

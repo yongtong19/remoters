@@ -10,7 +10,7 @@ use std::{
 };
 
 use anyhow::Result;
-use lan_remote_core::{
+use remoters_core::{
     Input,
     lan::{self, Pairing},
 };

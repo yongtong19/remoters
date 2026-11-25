@@ -17,9 +17,9 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --locked
       - name: Build desktop app
-        run: cargo build --release --locked -p lan-remote
+        run: cargo build --release --locked -p remoters
       - uses: actions/upload-artifact@v4
         with:
-          name: lan-remote-windows-x64
-          path: target/release/lan-remote.exe
+          name: remoters-windows-x64
+          path: target/release/remoters.exe
           if-no-files-found: error

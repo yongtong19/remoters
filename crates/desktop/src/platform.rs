@@ -4,7 +4,7 @@ use anyhow::{Context, Result, anyhow, ensure};
 use enigo::{Axis, Coordinate, Direction, Enigo, Keyboard, Mouse, Settings};
 use gpui::RenderImage;
 use image::{DynamicImage, ImageFormat, ImageReader, Limits, codecs::jpeg::JpegEncoder};
-use lan_remote_core::{Button, Desktop, Input, Point};
+use remoters_core::{Button, Desktop, Input, Point};
 use xcap::Monitor;
 
 pub fn request_host_permissions(view_only: bool) -> Result<()> {
@@ -227,7 +227,7 @@ mod macos {
         let granted = unsafe { CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() };
         ensure!(
             granted,
-            "Allow screen recording in System Settings, then reopen LAN Remote."
+            "Allow screen recording in System Settings, then reopen Remoters."
         );
         Ok(())
     }

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/remote-core", "crates/desktop"]
+members = ["crates/core", "crates/desktop"]
 resolver = "2"
 
 [workspace.package]
@@ -10,4 +10,4 @@ publish = false
 
 [workspace.dependencies]
 anyhow = "1.0"
-lan-remote-core = { path = "crates/remote-core" }
+remoters-core = { path = "crates/core" }

@@ -15,7 +15,7 @@ use gpui::{
     ScrollDelta, SharedString, Window, WindowBounds, WindowOptions, prelude::*, px, size,
 };
 use gpui_component::{IndexPath, Root, TitleBar, input::InputState, select::SelectState};
-use lan_remote_core::{
+use remoters_core::{
     Button, DEFAULT_PORT, Input, Point,
     lan::{self, Host, HostEvent, Pairing},
 };
@@ -72,7 +72,7 @@ fn main() {
             app.open_window(
                 WindowOptions {
                     titlebar: Some(gpui::TitlebarOptions {
-                        title: Some("LAN Remote".into()),
+                        title: Some("Remoters".into()),
                         traffic_light_position: Some(gpui::point(px(9.), px(14.))),
                         ..TitleBar::title_bar_options()
                     }),
@@ -85,7 +85,7 @@ fn main() {
                     app.new(|cx| Root::new(desktop, window, cx))
                 },
             )
-            .expect("open the LAN Remote window");
+            .expect("open the Remoters window");
             app.activate(true);
             app.on_window_closed(|app| {
                 if app.windows().is_empty() {

@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>lan-remote</string>
+    <string>remoters</string>
     <key>CFBundleIdentifier</key>
     <string>local.lanremote.desktop</string>
     <key>CFBundleName</key>
-    <string>LAN Remote</string>
+    <string>Remoters</string>
     <key>CFBundleIconFile</key>
-    <string>lan-remote.icns</string>
+    <string>remoters.icns</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleVersion</key>

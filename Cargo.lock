@@ -3438,36 +3438,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lan-remote"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "enigo",
- "gpui",
- "gpui-component",
- "gpui-component-assets",
- "if-addrs",
- "image",
- "lan-remote-core",
- "screencapturekit 12.0.0",
- "smallvec",
- "xcap",
-]
-
-[[package]]
-name = "lan-remote-core"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "base64",
- "getrandom 0.3.4",
- "rcgen",
- "rustls",
- "sha2 0.10.9",
- "subtle",
-]
-
-[[package]]
 name = "lazy_static"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5355,6 +5325,36 @@ name = "regex-syntax"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d902046e6a28a1e4c3cab97258a0ce11e994903f01c2d97a9447a0b3df85f4f6"
+
+[[package]]
+name = "remoters"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "enigo",
+ "gpui",
+ "gpui-component",
+ "gpui-component-assets",
+ "if-addrs",
+ "image",
+ "remoters-core",
+ "screencapturekit 12.0.0",
+ "smallvec",
+ "xcap",
+]
+
+[[package]]
+name = "remoters-core"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "getrandom 0.3.4",
+ "rcgen",
+ "rustls",
+ "sha2 0.10.9",
+ "subtle",
+]
 
 [[package]]
 name = "resvg"

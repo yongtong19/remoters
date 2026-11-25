@@ -17,13 +17,13 @@ jobs:
       - name: Run tests
         run: cargo test --release --workspace --locked
       - name: Build desktop app
-        run: cargo build --release --locked -p lan-remote
+        run: cargo build --release --locked -p remoters
       - name: Package app
         run: |
-          bash packaging/macos.sh target/release/lan-remote dist/LanRemote.app
-          ditto -c -k --keepParent dist/LanRemote.app dist/LanRemote-macOS.zip
+          bash packaging/macos.sh target/release/remoters dist/Remoters.app
+          ditto -c -k --keepParent dist/Remoters.app dist/Remoters-macOS.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: lan-remote-macos-arm64
-          path: dist/LanRemote-macOS.zip
+          name: remoters-macos-arm64
+          path: dist/Remoters-macOS.zip
           if-no-files-found: error
