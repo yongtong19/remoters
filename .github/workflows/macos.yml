@@ -15,7 +15,7 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Run tests
-        run: cargo test --workspace --locked
+        run: cargo test --release --workspace --locked
       - name: Build desktop app
         run: cargo build --release --locked -p lan-remote
       - name: Package app
