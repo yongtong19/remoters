@@ -16,7 +16,7 @@ macOS 14 或更新版本作为被控端时，需要在系统设置中允许屏�
 | 部分 | 代码与职责 |
 | --- | --- |
 | `crates/remote-core` | Rust。封包、配对、屏幕会话、键鼠事件，以及 TCP/TLS 直连。 |
-| `crates/desktop` | Rust + egui/eframe。Mac、Windows 共用同一个 UI 和主控/被控逻辑。 |
+| `crates/desktop` | Rust + GPUI。Mac、Windows 共用同一个 UI 和主控/被控逻辑。 |
 | 平台适配 | macOS 用 ScreenCaptureKit，Windows 用 XCap 采集主屏。两端通过 Enigo 注入键鼠，并按系统转换坐标和键位。 |
 
 每次共享使用临时 TLS 身份。配对码包含证书 SHA‑256 指纹和随机口令。主控验证被控端持有对应证书的私钥，然后通过加密连接发送口令。只有认证成功后才会打开桌面会话。

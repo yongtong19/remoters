@@ -8,6 +8,8 @@
     <string>local.lanremote.desktop</string>
     <key>CFBundleName</key>
     <string>LAN Remote</string>
+    <key>CFBundleIconFile</key>
+    <string>lan-remote.icns</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleVersion</key>

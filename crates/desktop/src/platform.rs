@@ -1,7 +1,8 @@
-use std::{collections::HashSet, io::Cursor};
+use std::{collections::HashSet, io::Cursor, sync::Arc};
 
 use anyhow::{Context, Result, anyhow, ensure};
 use enigo::{Axis, Coordinate, Direction, Enigo, Keyboard, Mouse, Settings};
+use gpui::RenderImage;
 use image::{DynamicImage, ImageFormat, ImageReader, Limits, codecs::jpeg::JpegEncoder};
 use lan_remote_core::{Button, Desktop, Input, Point};
 use xcap::Monitor;
@@ -160,22 +161,33 @@ fn native_button(button: Button) -> enigo::Button {
     }
 }
 
-pub fn decode_frame(bytes: Vec<u8>) -> Result<eframe::egui::ColorImage> {
+pub struct VideoFrame {
+    pub image: Arc<RenderImage>,
+    pub width: u32,
+    pub height: u32,
+}
+
+pub fn decode_frame(bytes: Vec<u8>) -> Result<VideoFrame> {
     let mut reader = ImageReader::with_format(Cursor::new(bytes), ImageFormat::Jpeg);
     let mut limits = Limits::default();
     limits.max_image_width = Some(4096);
     limits.max_image_height = Some(4096);
     limits.max_alloc = Some(64 * 1024 * 1024);
     reader.limits(limits);
-    let image = reader.decode()?.into_rgba8();
-    ensure!(
-        image.width() > 0 && image.height() > 0,
-        "The host sent an empty frame."
-    );
-    Ok(eframe::egui::ColorImage::from_rgba_unmultiplied(
-        [image.width() as usize, image.height() as usize],
-        image.as_raw(),
-    ))
+    let mut image = reader.decode()?.into_rgba8();
+    let (width, height) = image.dimensions();
+    ensure!(width > 0 && height > 0, "The host sent an empty frame.");
+    // GPUI expects BGRA pixels in its sprite atlas.
+    for pixel in image.pixels_mut() {
+        pixel.0.swap(0, 2);
+    }
+    Ok(VideoFrame {
+        image: Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(
+            image
+        )])),
+        width,
+        height,
+    })
 }
 
 #[cfg(target_os = "windows")]
