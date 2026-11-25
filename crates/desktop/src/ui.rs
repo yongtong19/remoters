@@ -3,7 +3,7 @@ use gpui::{
     canvas, div, point, prelude::*, px, rgb, size,
 };
 use gpui_component::{
-    Disableable, Sizable, Theme, ThemeMode,
+    Disableable, Sizable, Theme, ThemeMode, TitleBar,
     button::{Button, ButtonCustomVariant, ButtonVariants},
     checkbox::Checkbox,
     input::Input,
@@ -40,6 +40,8 @@ pub fn configure_theme(cx: &mut App) {
     theme.colors.primary_foreground = rgb(WHITE).into();
     theme.colors.selection = rgb(0xD3F1DC).into();
     theme.colors.accent = rgb(ACCENT_LIGHT).into();
+    theme.colors.title_bar = rgb(SIDEBAR).into();
+    theme.colors.title_bar_border = rgb(BORDER).into();
 }
 
 impl Render for Desktop {
@@ -57,22 +59,58 @@ impl Render for Desktop {
         div()
             .size_full()
             .flex()
+            .flex_col()
             .bg(rgb(BACKGROUND))
             .text_color(rgb(INK))
-            .child(self.sidebar(sidebar_width, cx))
+            .child(title_bar())
             .child(
                 div()
-                    .id("workspace")
                     .flex_1()
-                    .min_w_0()
                     .min_h_0()
                     .flex()
-                    .flex_col()
-                    .overflow_y_scroll()
-                    .p(px(padding))
-                    .child(content),
+                    .child(self.sidebar(sidebar_width, cx))
+                    .child(
+                        div()
+                            .id("workspace")
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .flex()
+                            .flex_col()
+                            .overflow_y_scroll()
+                            .p(px(padding))
+                            .child(content),
+                    ),
             )
     }
+}
+
+fn title_bar() -> TitleBar {
+    TitleBar::new()
+        .h(px(42.))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .size(px(24.))
+                        .rounded(px(6.))
+                        .bg(rgb(ACCENT))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(monitor_mark(14., 9., 0xDAF1E2)),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("LAN Remote"),
+                ),
+        )
+        .child(div().pr_3().child(pill("Local network", false)))
 }
 
 impl Desktop {
@@ -92,30 +130,6 @@ impl Desktop {
             .border_color(rgb(BORDER))
             .px_4()
             .py_5()
-            .gap_8()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .px_2()
-                    .child(
-                        div()
-                            .size(px(36.))
-                            .rounded(px(10.))
-                            .bg(rgb(ACCENT))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(monitor_mark(20., 13., 0xDAF1E2)),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(17.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("LAN Remote"),
-                    ),
-            )
             .child(
                 div()
                     .flex()
@@ -151,15 +165,6 @@ impl Desktop {
                                 }
                             }))
                     })),
-            )
-            .child(div().flex_1())
-            .child(
-                div()
-                    .px_2()
-                    .pt_4()
-                    .border_t_1()
-                    .border_color(rgb(BORDER))
-                    .child(pill("Local network", false)),
             )
     }
 

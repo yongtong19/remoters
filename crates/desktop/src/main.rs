@@ -14,7 +14,7 @@ use gpui::{
     App, Application, Bounds, Context, Entity, FocusHandle, Keystroke, Modifiers, Pixels,
     ScrollDelta, SharedString, Window, WindowBounds, WindowOptions, prelude::*, px, size,
 };
-use gpui_component::{IndexPath, Root, input::InputState, select::SelectState};
+use gpui_component::{IndexPath, Root, TitleBar, input::InputState, select::SelectState};
 use lan_remote_core::{
     Button, DEFAULT_PORT, Input, Point,
     lan::{self, Host, HostEvent, Pairing},
@@ -73,7 +73,8 @@ fn main() {
                 WindowOptions {
                     titlebar: Some(gpui::TitlebarOptions {
                         title: Some("LAN Remote".into()),
-                        ..Default::default()
+                        traffic_light_position: Some(gpui::point(px(9.), px(14.))),
+                        ..TitleBar::title_bar_options()
                     }),
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(px(740.), px(540.))),
