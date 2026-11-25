@@ -1,4 +1,4 @@
-name: Desktop
+name: Windows desktop
 
 on: [push, pull_request, workflow_dispatch]
 
@@ -7,15 +7,7 @@ permissions:
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            artifact: lan-remote-macos-arm64
-          - os: windows-latest
-            artifact: lan-remote-windows-x64
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - name: Select Rust
@@ -26,22 +18,8 @@ jobs:
         run: cargo test --workspace --locked
       - name: Build desktop app
         run: cargo build --release --locked -p lan-remote
-      - name: Package macOS app
-        if: runner.os == 'macOS'
-        run: |
-          bash packaging/macos.sh target/release/lan-remote dist/LanRemote.app
-          ditto -c -k --keepParent dist/LanRemote.app dist/LanRemote-macOS.zip
-      - name: Upload macOS app
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: dist/LanRemote-macOS.zip
-          if-no-files-found: error
-      - name: Upload Windows app
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
+          name: lan-remote-windows-x64
           path: target/release/lan-remote.exe
           if-no-files-found: error

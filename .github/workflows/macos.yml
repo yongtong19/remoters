@@ -1,0 +1,29 @@
+name: macOS desktop (manual)
+
+on: workflow_dispatch
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Rust
+        run: rustup default stable
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run tests
+        run: cargo test --workspace --locked
+      - name: Build desktop app
+        run: cargo build --release --locked -p lan-remote
+      - name: Package app
+        run: |
+          bash packaging/macos.sh target/release/lan-remote dist/LanRemote.app
+          ditto -c -k --keepParent dist/LanRemote.app dist/LanRemote-macOS.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lan-remote-macos-arm64
+          path: dist/LanRemote-macOS.zip
+          if-no-files-found: error

@@ -25,7 +25,7 @@ macOS 14 或更新版本作为被控端时，需要在系统设置中允许屏�
 
 ## 构建
 
-Windows 或 macOS 使用 Rust 1.92 或更新版本。
+Windows 或 macOS 使用 Rust 1.92 或更新版本。Windows 需要 MSVC C++ 构建工具，macOS 需要 Xcode 的 Swift 工具链和 macOS SDK。
 
 ```sh
 cargo test --workspace --locked
@@ -39,7 +39,7 @@ bash packaging/macos.sh
 open target/release/LanRemote.app
 ```
 
-[GitHub Actions](https://github.com/yongtong19/lan-remote/actions/workflows/desktop.yml) 构建 Mac（Apple Silicon）和 Windows（x64）程序。
+提交和拉取请求会自动构建 [Windows x64](https://github.com/yongtong19/lan-remote/actions/workflows/desktop.yml)。日常在本机验证 Mac。需要 Apple Silicon 构建产物时，可手动运行 [macOS 工作流](https://github.com/yongtong19/lan-remote/actions/workflows/macos.yml)。
 
 ## 后续阶段
 
