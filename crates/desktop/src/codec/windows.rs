@@ -2,10 +2,10 @@ use std::{
     collections::VecDeque,
     mem::ManuallyDrop,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
-    thread,
+    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
@@ -26,25 +26,32 @@ use windows::{
             HANDLE, HMODULE, POINT, RECT, TRUE,
         },
         Graphics::{
-            Direct3D::D3D_DRIVER_TYPE_HARDWARE,
+            Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_UNKNOWN},
             Direct3D10::ID3D10Multithread,
             Direct3D11::{
                 D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
-                D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_ALPHA_FILL_MODE_OPAQUE,
+                D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX,
+                D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
+                D3D11_VIDEO_PROCESSOR_ALPHA_FILL_MODE_OPAQUE, D3D11_VIDEO_PROCESSOR_CAPS,
                 D3D11_VIDEO_PROCESSOR_COLOR_SPACE, D3D11_VIDEO_PROCESSOR_CONTENT_DESC,
                 D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0,
                 D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_STREAM,
                 D3D11_VIDEO_USAGE_PLAYBACK_NORMAL, D3D11_VPIV_DIMENSION_TEXTURE2D,
                 D3D11_VPOV_DIMENSION_TEXTURE2D, D3D11CreateDevice, ID3D11DeviceContext,
                 ID3D11VideoContext, ID3D11VideoDevice, ID3D11VideoProcessor,
-                ID3D11VideoProcessorEnumerator, ID3D11VideoProcessorOutputView,
+                ID3D11VideoProcessorEnumerator, ID3D11VideoProcessorInputView,
+                ID3D11VideoProcessorOutputView,
             },
             Dxgi::{
                 Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_NV12, DXGI_SAMPLE_DESC},
-                IDXGIDevice,
+                CreateDXGIFactory1, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_INVALID_CALL,
+                DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, DXGI_OUTDUPL_POINTER_SHAPE_INFO,
+                DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR, DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR,
+                DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME, IDXGIAdapter, IDXGIAdapter1,
+                IDXGIDevice, IDXGIFactory1, IDXGIKeyedMutex, IDXGIOutput1, IDXGIOutputDuplication,
+                IDXGIResource,
             },
-            Gdi::{MONITOR_DEFAULTTONULL, MonitorFromPoint},
+            Gdi::{HMONITOR, MONITOR_DEFAULTTONULL, MonitorFromPoint},
         },
         Media::MediaFoundation::{
             CMSH264DecoderMFT, CODECAPI_AVEncCommonBufferSize, CODECAPI_AVEncCommonMaxBitRate,
@@ -80,8 +87,9 @@ use windows::{
             Performance::{QueryPerformanceCounter, QueryPerformanceFrequency},
             Threading::{
                 CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CancelWaitableTimer, CreateEventW,
-                CreateWaitableTimerExW, CreateWaitableTimerW, GetCurrentProcess, SetEvent,
-                SetWaitableTimer, TIMER_MODIFY_STATE, WaitForMultipleObjects, WaitForSingleObject,
+                CreateWaitableTimerExW, CreateWaitableTimerW, GetCurrentProcess, GetCurrentThread,
+                SetEvent, SetThreadPriority, SetWaitableTimer, THREAD_PRIORITY_HIGHEST,
+                TIMER_MODIFY_STATE, WaitForMultipleObjects, WaitForSingleObject,
             },
             Variant::VARIANT,
             WinRT::{
@@ -102,6 +110,52 @@ const BT709_FULL_RANGE: D3D11_VIDEO_PROCESSOR_COLOR_SPACE = D3D11_VIDEO_PROCESSO
 };
 
 const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
+
+#[link(name = "winmm")]
+unsafe extern "system" {
+    fn timeBeginPeriod(u_period: u32) -> u32;
+    fn timeEndPeriod(u_period: u32) -> u32;
+}
+
+struct TimerResolutionGuard(bool);
+
+impl TimerResolutionGuard {
+    fn new() -> Self {
+        Self(unsafe { timeBeginPeriod(1) } == 0)
+    }
+}
+
+impl Drop for TimerResolutionGuard {
+    fn drop(&mut self) {
+        if self.0 {
+            unsafe { timeEndPeriod(1) };
+        }
+    }
+}
+
+fn qpc_frequency() -> i64 {
+    static FREQ: OnceLock<i64> = OnceLock::new();
+    *FREQ.get_or_init(|| {
+        let mut qpf = 0i64;
+        unsafe {
+            let _ = QueryPerformanceFrequency(&mut qpf);
+        }
+        qpf.max(1)
+    })
+}
+
+fn qpc_to_100ns(qpc: i64) -> i64 {
+    let freq = qpc_frequency();
+    (i128::from(qpc) * 10_000_000 / i128::from(freq)) as i64
+}
+
+fn query_qpc_100ns() -> i64 {
+    let mut qpc = 0i64;
+    unsafe {
+        let _ = QueryPerformanceCounter(&mut qpc);
+    }
+    qpc_to_100ns(qpc)
+}
 
 fn pack_u64(hi: u32, lo: u32) -> u64 {
     (u64::from(hi) << 32) | u64::from(lo)
@@ -204,13 +258,20 @@ struct VideoDevice {
     manager: IMFDXGIDeviceManager,
     video_context: ID3D11VideoContext,
     video: ID3D11VideoDevice,
-    _context: ID3D11DeviceContext,
+    context: ID3D11DeviceContext,
     device: ID3D11Device,
     _guard: ApartmentGuard,
 }
 
 impl VideoDevice {
     fn new(supplied: Option<ID3D11Device>) -> Result<Self> {
+        Self::new_with_adapter(supplied, None)
+    }
+
+    fn new_with_adapter(
+        supplied: Option<ID3D11Device>,
+        adapter: Option<&IDXGIAdapter1>,
+    ) -> Result<Self> {
         let guard = ApartmentGuard::start()?;
         let (device, context) = if let Some(device) = supplied {
             let context = unsafe { device.GetImmediateContext() }
@@ -219,10 +280,16 @@ impl VideoDevice {
         } else {
             let mut device = None;
             let mut context = None;
+            let dxgi_adapter: Option<IDXGIAdapter> = adapter.map(|a| a.cast()).transpose()?;
+            let driver_type = if dxgi_adapter.is_some() {
+                D3D_DRIVER_TYPE_UNKNOWN
+            } else {
+                D3D_DRIVER_TYPE_HARDWARE
+            };
             unsafe {
                 D3D11CreateDevice(
-                    None,
-                    D3D_DRIVER_TYPE_HARDWARE,
+                    dxgi_adapter.as_ref(),
+                    driver_type,
                     HMODULE::default(),
                     D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT,
                     None,
@@ -238,6 +305,9 @@ impl VideoDevice {
                 context.context("Missing D3D11 context.")?,
             )
         };
+        if let Ok(dxgi) = device.cast::<IDXGIDevice>() {
+            let _ = unsafe { dxgi.SetGPUThreadPriority(7) };
+        }
         let multithread: ID3D10Multithread = context
             .cast()
             .context("Could not enable D3D11 multithread protection.")?;
@@ -259,11 +329,34 @@ impl VideoDevice {
             manager,
             video_context,
             video,
-            _context: context,
+            context,
             device,
             _guard: guard,
         })
     }
+}
+
+fn find_monitor_output(monitor: HMONITOR) -> Result<(IDXGIAdapter1, IDXGIOutput1)> {
+    let factory: IDXGIFactory1 =
+        unsafe { CreateDXGIFactory1() }.context("Could not create DXGI factory.")?;
+    for adapter_idx in 0u32.. {
+        let Ok(adapter) = (unsafe { factory.EnumAdapters1(adapter_idx) }) else {
+            break;
+        };
+        for output_idx in 0u32.. {
+            let Ok(output) = (unsafe { adapter.EnumOutputs(output_idx) }) else {
+                break;
+            };
+            let desc = unsafe { output.GetDesc() }?;
+            if desc.Monitor == monitor {
+                let output1: IDXGIOutput1 = output
+                    .cast()
+                    .context("DXGI output does not support Desktop Duplication.")?;
+                return Ok((adapter, output1));
+            }
+        }
+    }
+    anyhow::bail!("Could not find DXGI output for the selected monitor.")
 }
 
 // ---------------------------------------------------------------------------
@@ -557,6 +650,7 @@ impl NativeDecoder {
                 .VideoProcessorBlt(processor, &output_view, 0, &streams);
             let _ = ManuallyDrop::take(&mut streams[0].pInputSurface);
             blt?;
+            self.gpu.context.Flush();
         }
 
         Ok(VideoFrame {
@@ -737,128 +831,600 @@ struct Nv12Slot {
     view: ID3D11VideoProcessorOutputView,
 }
 
-struct NativeEncoder {
-    // Field order matters: COM/WinRT objects drop BEFORE `gpu` (which runs MFShutdown/CoUninitialize).
-    latest: Option<Direct3D11CaptureFrame>,
+#[derive(Clone)]
+struct CursorBitmap {
+    width: u32,
+    height: u32,
+    bgra: Vec<u8>,
+}
+
+struct CursorOverlay {
+    x: i32,
+    y: i32,
+    generation: u64,
+    bitmap: Arc<CursorBitmap>,
+}
+
+struct CursorCache {
+    generation: u64,
+    width: u32,
+    height: u32,
+    texture: ID3D11Texture2D,
+    view: ID3D11VideoProcessorInputView,
+}
+
+fn convert_pointer_shape(
+    info: &DXGI_OUTDUPL_POINTER_SHAPE_INFO,
+    raw: &[u8],
+) -> Option<CursorBitmap> {
+    let width = info.Width;
+    if width == 0 || info.Height == 0 {
+        return None;
+    }
+    let pitch = usize::try_from(info.Pitch).ok()?;
+    let w = usize::try_from(width).ok()?;
+    let kind = info.Type as i32;
+
+    if kind == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR.0 {
+        let height = info.Height;
+        let h = usize::try_from(height).ok()?;
+        let row_bytes = w.checked_mul(4)?;
+        if pitch < row_bytes || raw.len() < (h - 1).checked_mul(pitch)?.checked_add(row_bytes)? {
+            return None;
+        }
+        let mut bgra = Vec::with_capacity(h * row_bytes);
+        for y in 0..h {
+            let start = y * pitch;
+            bgra.extend_from_slice(&raw[start..start + row_bytes]);
+        }
+        return Some(CursorBitmap {
+            width,
+            height,
+            bgra,
+        });
+    }
+
+    if kind == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME.0 {
+        let height = info.Height / 2;
+        if height == 0 {
+            return None;
+        }
+        let h = usize::try_from(height).ok()?;
+        let total_h = usize::try_from(info.Height).ok()?;
+        if raw.len() < total_h.checked_mul(pitch)? || pitch * 8 < w {
+            return None;
+        }
+        let mut bgra = Vec::with_capacity(w * h * 4);
+        for y in 0..h {
+            let and_row = &raw[y * pitch..(y + 1) * pitch];
+            let xor_row = &raw[(y + h) * pitch..(y + h + 1) * pitch];
+            for x in 0..w {
+                let mask = 0x80u8 >> (x & 7);
+                let and_bit = (and_row[x / 8] & mask) != 0;
+                let xor_bit = (xor_row[x / 8] & mask) != 0;
+                let pixel = match (and_bit, xor_bit) {
+                    (false, false) => [0, 0, 0, 255],
+                    (false, true) => [255, 255, 255, 255],
+                    (true, false) => [0, 0, 0, 0],
+                    (true, true) => [0, 0, 0, 255],
+                };
+                bgra.extend_from_slice(&pixel);
+            }
+        }
+        return Some(CursorBitmap {
+            width,
+            height,
+            bgra,
+        });
+    }
+
+    if kind == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR.0 {
+        let height = info.Height;
+        let h = usize::try_from(height).ok()?;
+        let row_bytes = w.checked_mul(4)?;
+        if pitch < row_bytes || raw.len() < (h - 1).checked_mul(pitch)?.checked_add(row_bytes)? {
+            return None;
+        }
+        let mut bgra = Vec::with_capacity(w * h * 4);
+        for y in 0..h {
+            let row = &raw[y * pitch..y * pitch + row_bytes];
+            for px in row.chunks_exact(4) {
+                let (b, g, r, mask) = (px[0], px[1], px[2], px[3]);
+                if mask == 0 || (b | g | r) != 0 {
+                    bgra.extend_from_slice(&[b, g, r, 255]);
+                } else {
+                    bgra.extend_from_slice(&[0, 0, 0, 0]);
+                }
+            }
+        }
+        return Some(CursorBitmap {
+            width,
+            height,
+            bgra,
+        });
+    }
+
+    None
+}
+
+fn create_bgra_texture(device: &ID3D11Device, width: u32, height: u32) -> Result<ID3D11Texture2D> {
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: width.max(1),
+        Height: height.max(1),
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        BindFlags: (D3D11_BIND_SHADER_RESOURCE.0 | D3D11_BIND_RENDER_TARGET.0) as u32,
+        ..Default::default()
+    };
+    let mut texture = None;
+    unsafe { device.CreateTexture2D(&desc, None, Some(&mut texture)) }?;
+    texture.context("Could not allocate BGRA texture.")
+}
+
+struct SharedSlot {
+    capture_tex: ID3D11Texture2D,
+    capture_mutex: IDXGIKeyedMutex,
+    gpu_tex: ID3D11Texture2D,
+    gpu_mutex: IDXGIKeyedMutex,
+}
+
+fn create_shared_bgra_pair(
+    capture_device: &ID3D11Device,
+    encode_device: &ID3D11Device,
+    width: u32,
+    height: u32,
+) -> Result<SharedSlot> {
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: width.max(1),
+        Height: height.max(1),
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        BindFlags: (D3D11_BIND_SHADER_RESOURCE.0 | D3D11_BIND_RENDER_TARGET.0) as u32,
+        MiscFlags: D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX.0 as u32,
+        ..Default::default()
+    };
+    let mut cap_tex = None;
+    unsafe { capture_device.CreateTexture2D(&desc, None, Some(&mut cap_tex)) }?;
+    let cap_tex: ID3D11Texture2D = cap_tex.context("Could not allocate shared BGRA texture.")?;
+    let cap_mutex: IDXGIKeyedMutex = cap_tex.cast()?;
+    let dxgi_res: IDXGIResource = cap_tex.cast()?;
+    let handle = unsafe { dxgi_res.GetSharedHandle() }?;
+    let mut enc_tex: Option<ID3D11Texture2D> = None;
+    unsafe { encode_device.OpenSharedResource(handle, &mut enc_tex) }?;
+    let enc_tex = enc_tex.context("Could not open shared BGRA texture on encode device.")?;
+    let enc_mutex: IDXGIKeyedMutex = enc_tex.cast()?;
+    Ok(SharedSlot {
+        capture_tex: cap_tex,
+        capture_mutex: cap_mutex,
+        gpu_tex: enc_tex,
+        gpu_mutex: enc_mutex,
+    })
+}
+
+fn create_shared_bgra_ring(
+    capture_device: &ID3D11Device,
+    encode_device: &ID3D11Device,
+    width: u32,
+    height: u32,
+) -> Result<[SharedSlot; 3]> {
+    Ok([
+        create_shared_bgra_pair(capture_device, encode_device, width, height)?,
+        create_shared_bgra_pair(capture_device, encode_device, width, height)?,
+        create_shared_bgra_pair(capture_device, encode_device, width, height)?,
+    ])
+}
+
+struct DdaState {
+    slots: [SharedSlot; 3],
+    slot_keys: [u64; 3],
+    ring_gen: u64,
+    slot_size: (u32, u32),
+    latest_idx: usize,
+    reading_idx: Option<usize>,
+    has_desktop: bool,
+    frame_seq: u64,
+    present_100ns: i64,
+    arrived_100ns: i64,
+    cursor_visible: bool,
+    cursor_pos: (i32, i32),
+    cursor_gen: u64,
+    cursor_bitmap: Option<Arc<CursorBitmap>>,
+    error: Option<anyhow::Error>,
+}
+
+struct DdaSlotLease {
+    state: Arc<Mutex<DdaState>>,
+    gpu_mutex: IDXGIKeyedMutex,
+    idx: usize,
+    next_key: u64,
+    ring_gen: u64,
+}
+
+impl Drop for DdaSlotLease {
+    fn drop(&mut self) {
+        let _ = unsafe { self.gpu_mutex.ReleaseSync(self.next_key) };
+        let mut guard = self.state.lock().unwrap();
+        if guard.ring_gen == self.ring_gen {
+            guard.slot_keys[self.idx] = self.next_key;
+            guard.reading_idx = None;
+        }
+    }
+}
+
+struct WgcFrameLease(Option<Direct3D11CaptureFrame>);
+
+impl Drop for WgcFrameLease {
+    fn drop(&mut self) {
+        if let Some(frame) = self.0.take() {
+            let _ = frame.Close();
+        }
+    }
+}
+
+#[allow(dead_code)]
+enum InputLease {
+    Dda(DdaSlotLease),
+    Wgc(WgcFrameLease),
+}
+
+struct AcquiredInput {
+    texture: ID3D11Texture2D,
+    source_width: i32,
+    source_height: i32,
+    capture_stamp: i64,
+    present_100ns: i64,
+    arrived_100ns: i64,
+    cursor: Option<CursorOverlay>,
+    _lease: InputLease,
+}
+
+struct DdaCapture {
+    stop: Arc<AtomicBool>,
+    state: Arc<Mutex<DdaState>>,
+    worker: Option<JoinHandle<()>>,
+    last_seq: u64,
+}
+
+impl DdaCapture {
+    fn start(
+        capture_device: ID3D11Device,
+        capture_context: ID3D11DeviceContext,
+        encode_device: ID3D11Device,
+        output1: IDXGIOutput1,
+        duplication: IDXGIOutputDuplication,
+        desktop_size: (u32, u32),
+        wake: Arc<OwnedHandle>,
+    ) -> Result<Self> {
+        let slots = create_shared_bgra_ring(
+            &capture_device,
+            &encode_device,
+            desktop_size.0,
+            desktop_size.1,
+        )?;
+        let state = Arc::new(Mutex::new(DdaState {
+            slots,
+            slot_keys: [0, 0, 0],
+            ring_gen: 0,
+            slot_size: desktop_size,
+            latest_idx: 0,
+            reading_idx: None,
+            has_desktop: false,
+            frame_seq: 0,
+            present_100ns: 0,
+            arrived_100ns: 0,
+            cursor_visible: false,
+            cursor_pos: (0, 0),
+            cursor_gen: 0,
+            cursor_bitmap: None,
+            error: None,
+        }));
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let worker_state = state.clone();
+        let worker = thread::Builder::new()
+            .name("dda-capture".into())
+            .spawn(move || {
+                dda_worker(
+                    capture_device,
+                    capture_context,
+                    encode_device,
+                    output1,
+                    duplication,
+                    worker_state,
+                    worker_stop,
+                    wake,
+                );
+            })?;
+        Ok(Self {
+            stop,
+            state,
+            worker: Some(worker),
+            last_seq: 0,
+        })
+    }
+
+    fn acquire(&mut self) -> Result<Option<AcquiredInput>> {
+        let mut state = self.state.lock().unwrap();
+        if let Some(error) = state.error.take() {
+            return Err(error);
+        }
+        if !state.has_desktop || state.frame_seq == self.last_seq {
+            return Ok(None);
+        }
+        let idx = state.latest_idx;
+        state.reading_idx = Some(idx);
+        let key = state.slot_keys[idx];
+        let ring_gen = state.ring_gen;
+        let texture = state.slots[idx].gpu_tex.clone();
+        let gpu_mutex = state.slots[idx].gpu_mutex.clone();
+        let (w, h) = state.slot_size;
+        let present_100ns = state.present_100ns;
+        let arrived_100ns = state.arrived_100ns;
+        self.last_seq = state.frame_seq;
+        let cursor = if state.cursor_visible
+            && let Some(bitmap) = &state.cursor_bitmap
+        {
+            Some(CursorOverlay {
+                x: state.cursor_pos.0,
+                y: state.cursor_pos.1,
+                generation: state.cursor_gen,
+                bitmap: bitmap.clone(),
+            })
+        } else {
+            None
+        };
+        drop(state);
+        if let Err(err) = unsafe { gpu_mutex.AcquireSync(key, u32::MAX) } {
+            let mut state = self.state.lock().unwrap();
+            if state.ring_gen == ring_gen {
+                state.reading_idx = None;
+            }
+            return Err(err.into());
+        }
+        Ok(Some(AcquiredInput {
+            texture,
+            source_width: w as i32,
+            source_height: h as i32,
+            capture_stamp: arrived_100ns.max(1),
+            present_100ns,
+            arrived_100ns,
+            cursor,
+            _lease: InputLease::Dda(DdaSlotLease {
+                state: self.state.clone(),
+                gpu_mutex,
+                idx,
+                next_key: key + 1,
+                ring_gen,
+            }),
+        }))
+    }
+}
+
+impl Drop for DdaCapture {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+struct ComThreadGuard(bool);
+
+impl ComThreadGuard {
+    fn new() -> Self {
+        let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        Self(hr.is_ok())
+    }
+}
+
+impl Drop for ComThreadGuard {
+    fn drop(&mut self) {
+        if self.0 {
+            unsafe { CoUninitialize() };
+        }
+    }
+}
+
+fn dda_worker(
+    capture_device: ID3D11Device,
+    capture_context: ID3D11DeviceContext,
+    encode_device: ID3D11Device,
+    output1: IDXGIOutput1,
+    mut duplication: IDXGIOutputDuplication,
+    state: Arc<Mutex<DdaState>>,
+    stop: Arc<AtomicBool>,
+    wake: Arc<OwnedHandle>,
+) {
+    let _com = ComThreadGuard::new();
+    let _ = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST) };
+    let mut ptr_buf: Vec<u8> = Vec::new();
+    let mut has_desktop_yet = false;
+
+    while !stop.load(Ordering::Acquire) {
+        let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
+        let mut resource = None;
+        let acquired = unsafe { duplication.AcquireNextFrame(100, &mut info, &mut resource) };
+        match acquired {
+            Ok(()) => {
+                let arrived_100ns = query_qpc_100ns();
+                let step = (|| -> Result<bool> {
+                    let mut updated = false;
+                    if (info.AccumulatedFrames > 0 || !has_desktop_yet)
+                        && let Some(resource) = resource
+                    {
+                        let tex: ID3D11Texture2D = resource.cast()?;
+                        let mut desc = D3D11_TEXTURE2D_DESC::default();
+                        unsafe { tex.GetDesc(&mut desc) };
+                        let (write_idx, target_tex, cap_mutex, key, ring_gen) = {
+                            let mut guard = state.lock().unwrap();
+                            if guard.slot_size != (desc.Width, desc.Height) {
+                                guard.slots = create_shared_bgra_ring(
+                                    &capture_device,
+                                    &encode_device,
+                                    desc.Width,
+                                    desc.Height,
+                                )?;
+                                guard.slot_keys = [0, 0, 0];
+                                guard.reading_idx = None;
+                                guard.ring_gen = guard.ring_gen.wrapping_add(1);
+                                guard.slot_size = (desc.Width, desc.Height);
+                            }
+                            let idx = (0..3)
+                                .find(|&i| i != guard.latest_idx && Some(i) != guard.reading_idx)
+                                .unwrap_or(0);
+                            (
+                                idx,
+                                guard.slots[idx].capture_tex.clone(),
+                                guard.slots[idx].capture_mutex.clone(),
+                                guard.slot_keys[idx],
+                                guard.ring_gen,
+                            )
+                        };
+                        unsafe {
+                            cap_mutex.AcquireSync(key, u32::MAX)?;
+                            capture_context.CopyResource(&target_tex, &tex);
+                            cap_mutex.ReleaseSync(key + 1)?;
+                        }
+                        let mut guard = state.lock().unwrap();
+                        if guard.ring_gen == ring_gen {
+                            guard.slot_keys[write_idx] = key + 1;
+                            guard.latest_idx = write_idx;
+                        }
+                        guard.has_desktop = true;
+                        has_desktop_yet = true;
+                        updated = true;
+                    }
+
+                    if info.LastMouseUpdateTime != 0 {
+                        let mut new_cursor = None;
+                        if info.PointerShapeBufferSize > 0 {
+                            let cap = info.PointerShapeBufferSize as usize;
+                            if ptr_buf.len() < cap {
+                                ptr_buf.resize(cap, 0);
+                            }
+                            let mut required = 0u32;
+                            let mut shape_info = DXGI_OUTDUPL_POINTER_SHAPE_INFO::default();
+                            unsafe {
+                                duplication.GetFramePointerShape(
+                                    info.PointerShapeBufferSize,
+                                    ptr_buf.as_mut_ptr().cast(),
+                                    &mut required,
+                                    &mut shape_info,
+                                )
+                            }?;
+                            if let Some(bitmap) =
+                                convert_pointer_shape(&shape_info, &ptr_buf[..required as usize])
+                            {
+                                new_cursor = Some(Arc::new(bitmap));
+                            }
+                        }
+                        let next_visible = info.PointerPosition.Visible.as_bool();
+                        let next_pos =
+                            (info.PointerPosition.Position.x, info.PointerPosition.Position.y);
+                        let mut guard = state.lock().unwrap();
+                        let cursor_changed = guard.cursor_visible != next_visible
+                            || (next_visible && guard.cursor_pos != next_pos)
+                            || new_cursor.is_some();
+                        guard.cursor_visible = next_visible;
+                        guard.cursor_pos = next_pos;
+                        if let Some(bitmap) = new_cursor {
+                            guard.cursor_bitmap = Some(bitmap);
+                            guard.cursor_gen = guard.cursor_gen.wrapping_add(1);
+                        }
+                        if cursor_changed {
+                            updated = true;
+                        }
+                    }
+
+                    if updated && has_desktop_yet {
+                        let present_100ns = if info.AccumulatedFrames > 0 && info.LastPresentTime > 0 {
+                            qpc_to_100ns(info.LastPresentTime)
+                        } else if info.LastMouseUpdateTime > 0 {
+                            qpc_to_100ns(info.LastMouseUpdateTime)
+                        } else {
+                            arrived_100ns
+                        };
+                        let mut guard = state.lock().unwrap();
+                        guard.present_100ns = present_100ns;
+                        guard.arrived_100ns = arrived_100ns;
+                        guard.frame_seq = guard.frame_seq.wrapping_add(1);
+                        return Ok(true);
+                    }
+                    Ok(false)
+                })();
+                let _ = unsafe { duplication.ReleaseFrame() };
+                match step {
+                    Ok(true) => wake.signal(),
+                    Ok(false) => {}
+                    Err(err) => {
+                        state.lock().unwrap().error = Some(err);
+                        wake.signal();
+                        break;
+                    }
+                }
+            }
+            Err(err) if err.code() == DXGI_ERROR_WAIT_TIMEOUT => continue,
+            Err(err)
+                if err.code() == DXGI_ERROR_ACCESS_LOST
+                    || err.code() == DXGI_ERROR_INVALID_CALL =>
+            {
+                drop(duplication);
+                let mut rebuilt = None;
+                for _ in 0..100 {
+                    if stop.load(Ordering::Acquire) {
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(20));
+                    if let Ok(next) = unsafe { output1.DuplicateOutput(&capture_device) } {
+                        rebuilt = Some(next);
+                        break;
+                    }
+                }
+                match rebuilt {
+                    Some(next) => {
+                        duplication = next;
+                        has_desktop_yet = false;
+                    }
+                    None => {
+                        state.lock().unwrap().error = Some(err.into());
+                        wake.signal();
+                        break;
+                    }
+                }
+            }
+            Err(err) => {
+                state.lock().unwrap().error = Some(err.into());
+                wake.signal();
+                break;
+            }
+        }
+    }
+}
+
+struct WgcCapture {
+    pending: Option<Direct3D11CaptureFrame>,
+    pending_arrived_100ns: i64,
     session: Option<GraphicsCaptureSession>,
     pool: Option<Direct3D11CaptureFramePool>,
     frame_arrived_token: Option<i64>,
     capture_device: IDirect3DDevice,
-    nv12_pool: Vec<Nv12Slot>,
-    nv12_index: usize,
-    processor: Option<ID3D11VideoProcessor>,
-    enumerator: Option<ID3D11VideoProcessorEnumerator>,
-    _event_relay: IMFAsyncCallback,
-    event_queue: Arc<EventQueue>,
-    codec: ICodecAPI,
-    _events: IMFMediaEventGenerator,
-    transform: IMFTransform,
-    gpu: VideoDevice,
-    wake: Arc<OwnedHandle>,
-    pace_timer: Option<OwnedHandle>,
     capture_size: SizeInt32,
-    input_id: u32,
-    output_id: u32,
-    input_width: u32,
-    input_height: u32,
-    output_width: u32,
-    output_height: u32,
-    duration: i64,
-    first_capture: i64,
     last_capture: i64,
-    last_time: i64,
-    submit_at: Instant,
-    last_submit: Instant,
-    capture_age_sum_ms: f64,
-    capture_age_max_ms: f64,
-    capture_age_count: u32,
-    log_enabled: bool,
-    keyframe: bool,
-    wants_input: bool,
-    waiting_for_output: bool,
-    has_encoded: bool,
 }
 
-impl Drop for NativeEncoder {
-    fn drop(&mut self) {
-        if let (Some(pool), Some(token)) = (&self.pool, self.frame_arrived_token.take()) {
-            let _ = pool.RemoveFrameArrived(token);
-        }
-        if let Some(session) = self.session.take() {
-            let _ = session.Close();
-        }
-        if let Some(pool) = self.pool.take() {
-            let _ = pool.Close();
-        }
-        if let Some(latest) = self.latest.take() {
-            let _ = latest.Close();
-        }
-        {
-            let mut state = self.event_queue.state.lock().unwrap();
-            state.stopped = true;
-            state.pending.clear();
-            let _detached = state.source.take();
-        }
-        unsafe {
-            let _ = self
-                .transform
-                .ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
-            let _ = self.transform.ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0);
-            if let Ok(shutdown) = self.transform.cast::<IMFShutdown>() {
-                let _ = shutdown.Shutdown();
-            }
-        }
-        self.nv12_pool.clear();
-        self.processor = None;
-        self.enumerator = None;
-    }
-}
-
-impl NativeEncoder {
-    fn new(
-        width: u32,
-        height: u32,
-        fps: u32,
-        bitrate: u32,
-        center: (i32, i32),
-        wake_handle: &OwnedHandle,
-    ) -> Result<Self> {
-        let wake = Arc::new(wake_handle.duplicate()?);
-        let pace_timer = OwnedHandle::new_high_res_timer();
-        let gpu = VideoDevice::new(None)?;
-        let log_enabled = crate::metrics::enabled();
-
-        let (transform, events, codec, input_id, output_id) =
-            create_transform(&gpu, width, height, fps, bitrate, log_enabled)?;
-
-        let event_queue = Arc::new(EventQueue {
-            state: Mutex::new(EventQueueState {
-                pending: VecDeque::new(),
-                source: Some(events.clone()),
-                error: None,
-                stopped: false,
-            }),
-            wake: wake.clone(),
-        });
-        let event_relay: IMFAsyncCallback = EventRelay {
-            queue: event_queue.clone(),
-        }
-        .into();
-        unsafe { events.BeginGetEvent(&event_relay, None) }
-            .context("Could not start async Media Foundation event pump.")?;
-
-        let monitor = unsafe {
-            MonitorFromPoint(
-                POINT {
-                    x: center.0,
-                    y: center.1,
-                },
-                MONITOR_DEFAULTTONULL,
-            )
-        };
-        if monitor.is_invalid() {
-            return Err(windows_core::Error::from(ERROR_DEVICE_NOT_CONNECTED).into());
-        }
+impl WgcCapture {
+    fn start(monitor: HMONITOR, gpu: &VideoDevice, wake: &Arc<OwnedHandle>) -> Result<Self> {
         let interop: IGraphicsCaptureItemInterop = factory::<GraphicsCaptureItem, _>()
             .context("Could not get GraphicsCaptureItem interop factory.")?;
         let item: GraphicsCaptureItem = unsafe { interop.CreateForMonitor(monitor) }
@@ -888,17 +1454,369 @@ impl NativeEncoder {
         let session = pool.CreateCaptureSession(&item)?;
         session.StartCapture()?;
 
-        let now = Instant::now();
         Ok(Self {
-            latest: None,
+            pending: None,
+            pending_arrived_100ns: 0,
             session: Some(session),
             pool: Some(pool),
             frame_arrived_token: Some(token),
             capture_device,
+            capture_size,
+            last_capture: 0,
+        })
+    }
+
+    fn drain_pool(&mut self) -> Result<()> {
+        let Some(pool) = self.pool.as_ref() else {
+            return Ok(());
+        };
+        while let Ok(next) = pool.TryGetNextFrame() {
+            let size = next.ContentSize()?;
+            if size.Width != self.capture_size.Width || size.Height != self.capture_size.Height {
+                let _ = next.Close();
+                if let Some(old) = self.pending.take() {
+                    let _ = old.Close();
+                }
+                self.capture_size = size;
+                pool.Recreate(
+                    &self.capture_device,
+                    DirectXPixelFormat::B8G8R8A8UIntNormalized,
+                    2,
+                    self.capture_size,
+                )?;
+                return Ok(());
+            }
+            self.pending_arrived_100ns = query_qpc_100ns();
+            if let Some(old) = self.pending.replace(next) {
+                let _ = old.Close();
+            }
+        }
+        Ok(())
+    }
+
+    fn acquire(&mut self, has_encoded: bool) -> Result<Option<AcquiredInput>> {
+        self.drain_pool()?;
+        let Some(frame) = self.pending.as_ref() else {
+            return Ok(None);
+        };
+        let captured = frame.SystemRelativeTime()?.Duration;
+        if has_encoded && captured <= self.last_capture {
+            if let Some(old) = self.pending.take() {
+                let _ = old.Close();
+            }
+            return Ok(None);
+        }
+        let frame = self.pending.take().unwrap();
+        self.last_capture = captured;
+        let access: IDirect3DDxgiInterfaceAccess = frame.Surface()?.cast()?;
+        let texture: ID3D11Texture2D = unsafe { access.GetInterface() }?;
+        Ok(Some(AcquiredInput {
+            texture,
+            source_width: self.capture_size.Width,
+            source_height: self.capture_size.Height,
+            capture_stamp: captured,
+            present_100ns: captured,
+            arrived_100ns: self.pending_arrived_100ns,
+            cursor: None,
+            _lease: InputLease::Wgc(WgcFrameLease(Some(frame))),
+        }))
+    }
+}
+
+impl Drop for WgcCapture {
+    fn drop(&mut self) {
+        if let (Some(pool), Some(token)) = (&self.pool, self.frame_arrived_token.take()) {
+            let _ = pool.RemoveFrameArrived(token);
+        }
+        if let Some(session) = self.session.take() {
+            let _ = session.Close();
+        }
+        if let Some(pool) = self.pool.take() {
+            let _ = pool.Close();
+        }
+        if let Some(pending) = self.pending.take() {
+            let _ = pending.Close();
+        }
+    }
+}
+
+enum CaptureBackend {
+    Dda(DdaCapture),
+    Wgc(WgcCapture),
+}
+
+impl CaptureBackend {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Dda(_) => "dda",
+            Self::Wgc(_) => "wgc",
+        }
+    }
+
+    fn drain(&mut self) -> Result<()> {
+        if let Self::Wgc(wgc) = self {
+            wgc.drain_pool()?;
+        }
+        Ok(())
+    }
+
+    fn acquire(&mut self, has_encoded: bool) -> Result<Option<AcquiredInput>> {
+        match self {
+            Self::Dda(dda) => dda.acquire(),
+            Self::Wgc(wgc) => wgc.acquire(has_encoded),
+        }
+    }
+}
+
+#[derive(Default)]
+struct StageStats {
+    cap_age_sum_ms: f64,
+    queue_sum_ms: f64,
+    conv_sum_ms: f64,
+    enc_sum_ms: f64,
+    total_sum_ms: f64,
+    total_max_ms: f64,
+    count: u32,
+}
+
+struct NativeEncoder {
+    // Field order matters: capture/COM/MFT objects drop BEFORE `gpu` (which runs MFShutdown/CoUninitialize).
+    capture: CaptureBackend,
+    cursor_cache: Option<CursorCache>,
+    nv12_pool: Vec<Nv12Slot>,
+    nv12_index: usize,
+    last_nv12_idx: Option<usize>,
+    processor: Option<ID3D11VideoProcessor>,
+    enumerator: Option<ID3D11VideoProcessorEnumerator>,
+    max_input_streams: u32,
+    _event_relay: IMFAsyncCallback,
+    event_queue: Arc<EventQueue>,
+    codec: ICodecAPI,
+    _events: IMFMediaEventGenerator,
+    transform: IMFTransform,
+    gpu: VideoDevice,
+    wake: Arc<OwnedHandle>,
+    pace_timer: Option<OwnedHandle>,
+    _timer_resolution: TimerResolutionGuard,
+    input_id: u32,
+    output_id: u32,
+    input_width: u32,
+    input_height: u32,
+    output_width: u32,
+    output_height: u32,
+    duration: i64,
+    first_capture: i64,
+    last_time: i64,
+    submit_at: Instant,
+    last_submit: Instant,
+    pending_cap_age_ms: f64,
+    pending_queue_ms: f64,
+    pending_conv_ms: f64,
+    pending_present_100ns: i64,
+    stats: StageStats,
+    log_enabled: bool,
+    keyframe: bool,
+    wants_input: bool,
+    waiting_for_output: bool,
+    has_encoded: bool,
+}
+
+impl Drop for NativeEncoder {
+    fn drop(&mut self) {
+        {
+            let mut state = self.event_queue.state.lock().unwrap();
+            state.stopped = true;
+            state.pending.clear();
+            let _detached = state.source.take();
+        }
+        unsafe {
+            let _ = self
+                .transform
+                .ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
+            let _ = self.transform.ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0);
+            if let Ok(shutdown) = self.transform.cast::<IMFShutdown>() {
+                let _ = shutdown.Shutdown();
+            }
+        }
+        self.cursor_cache = None;
+        self.nv12_pool.clear();
+        self.processor = None;
+        self.enumerator = None;
+    }
+}
+
+fn try_init_dda(
+    monitor: HMONITOR,
+    width: u32,
+    height: u32,
+    fps: u32,
+    bitrate: u32,
+    wake: &Arc<OwnedHandle>,
+    log_enabled: bool,
+) -> Result<(
+    VideoDevice,
+    IMFTransform,
+    IMFMediaEventGenerator,
+    ICodecAPI,
+    u32,
+    u32,
+    DdaCapture,
+)> {
+    let (adapter, output1) = find_monitor_output(monitor)?;
+    let gpu = VideoDevice::new_with_adapter(None, Some(&adapter))?;
+    let (transform, events, codec, input_id, output_id) =
+        create_transform(&gpu, width, height, fps, bitrate, log_enabled)?;
+
+    // Use a dedicated D3D11 device for Desktop Duplication so AcquireNextFrame's
+    // internal device lock never contends with VideoProcessorBlt or NVENC MFT.
+    let dxgi_adapter: IDXGIAdapter = adapter.cast()?;
+    let mut cap_device = None;
+    let mut cap_context = None;
+    unsafe {
+        D3D11CreateDevice(
+            Some(&dxgi_adapter),
+            D3D_DRIVER_TYPE_UNKNOWN,
+            HMODULE::default(),
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            None,
+            D3D11_SDK_VERSION,
+            Some(&mut cap_device),
+            None,
+            Some(&mut cap_context),
+        )
+    }
+    .context("Could not create dedicated D3D11 device for Desktop Duplication.")?;
+    let cap_device = cap_device.context("Missing capture D3D11 device.")?;
+    let cap_context = cap_context.context("Missing capture D3D11 context.")?;
+    if let Ok(dxgi) = cap_device.cast::<IDXGIDevice>() {
+        let _ = unsafe { dxgi.SetGPUThreadPriority(7) };
+    }
+
+    let duplication = unsafe { output1.DuplicateOutput(&cap_device) }
+        .context("Could not initialize DXGI Desktop Duplication.")?;
+    let desc = unsafe { output1.GetDesc() }?;
+    let dw = u32::try_from(desc.DesktopCoordinates.right - desc.DesktopCoordinates.left)?;
+    let dh = u32::try_from(desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top)?;
+    ensure!(dw > 0 && dh > 0, "Invalid DXGI output dimensions.");
+    let dda = DdaCapture::start(
+        cap_device,
+        cap_context,
+        gpu.device.clone(),
+        output1,
+        duplication,
+        (dw, dh),
+        wake.clone(),
+    )?;
+    Ok((gpu, transform, events, codec, input_id, output_id, dda))
+}
+
+impl NativeEncoder {
+    fn new(
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate: u32,
+        center: (i32, i32),
+        wake_handle: &OwnedHandle,
+    ) -> Result<Self> {
+        let timer_resolution = TimerResolutionGuard::new();
+        let wake = Arc::new(wake_handle.duplicate()?);
+        let pace_timer = OwnedHandle::new_high_res_timer();
+        let log_enabled = crate::metrics::enabled();
+
+        let monitor = unsafe {
+            MonitorFromPoint(
+                POINT {
+                    x: center.0,
+                    y: center.1,
+                },
+                MONITOR_DEFAULTTONULL,
+            )
+        };
+        if monitor.is_invalid() {
+            return Err(windows_core::Error::from(ERROR_DEVICE_NOT_CONNECTED).into());
+        }
+
+        let force_wgc = std::env::var("REMOTERS_WIN_CAPTURE")
+            .ok()
+            .is_some_and(|v| v.eq_ignore_ascii_case("wgc"));
+
+        let (gpu, transform, events, codec, input_id, output_id, capture) = if !force_wgc {
+            match try_init_dda(monitor, width, height, fps, bitrate, &wake, log_enabled) {
+                Ok((gpu, transform, events, codec, input_id, output_id, dda)) => (
+                    gpu,
+                    transform,
+                    events,
+                    codec,
+                    input_id,
+                    output_id,
+                    CaptureBackend::Dda(dda),
+                ),
+                Err(err) => {
+                    if log_enabled {
+                        eprintln!("[remoters:win] dda_unavailable={err:#}; falling back to wgc");
+                    }
+                    let gpu = VideoDevice::new(None)?;
+                    let (transform, events, codec, input_id, output_id) =
+                        create_transform(&gpu, width, height, fps, bitrate, log_enabled)?;
+                    let wgc = WgcCapture::start(monitor, &gpu, &wake)?;
+                    (
+                        gpu,
+                        transform,
+                        events,
+                        codec,
+                        input_id,
+                        output_id,
+                        CaptureBackend::Wgc(wgc),
+                    )
+                }
+            }
+        } else {
+            let gpu = VideoDevice::new(None)?;
+            let (transform, events, codec, input_id, output_id) =
+                create_transform(&gpu, width, height, fps, bitrate, log_enabled)?;
+            let wgc = WgcCapture::start(monitor, &gpu, &wake)?;
+            (
+                gpu,
+                transform,
+                events,
+                codec,
+                input_id,
+                output_id,
+                CaptureBackend::Wgc(wgc),
+            )
+        };
+
+        if log_enabled {
+            eprintln!("[remoters:win] capture_backend={}", capture.name());
+        }
+
+        let event_queue = Arc::new(EventQueue {
+            state: Mutex::new(EventQueueState {
+                pending: VecDeque::new(),
+                source: Some(events.clone()),
+                error: None,
+                stopped: false,
+            }),
+            wake: wake.clone(),
+        });
+        let event_relay: IMFAsyncCallback = EventRelay {
+            queue: event_queue.clone(),
+        }
+        .into();
+        unsafe { events.BeginGetEvent(&event_relay, None) }
+            .context("Could not start async Media Foundation event pump.")?;
+
+        let now = Instant::now();
+        Ok(Self {
+            capture,
+            cursor_cache: None,
             nv12_pool: Vec::new(),
             nv12_index: 0,
+            last_nv12_idx: None,
             processor: None,
             enumerator: None,
+            max_input_streams: 1,
             _event_relay: event_relay,
             event_queue,
             codec,
@@ -907,7 +1825,7 @@ impl NativeEncoder {
             gpu,
             wake,
             pace_timer,
-            capture_size,
+            _timer_resolution: timer_resolution,
             input_id,
             output_id,
             input_width: 0,
@@ -916,13 +1834,14 @@ impl NativeEncoder {
             output_height: height,
             duration: 10_000_000 / i64::from(fps),
             first_capture: 0,
-            last_capture: 0,
             last_time: -1,
             submit_at: now,
             last_submit: now,
-            capture_age_sum_ms: 0.0,
-            capture_age_max_ms: 0.0,
-            capture_age_count: 0,
+            pending_cap_age_ms: 0.0,
+            pending_queue_ms: 0.0,
+            pending_conv_ms: 0.0,
+            pending_present_100ns: 0,
+            stats: StageStats::default(),
             log_enabled,
             keyframe: true,
             wants_input: false,
@@ -961,10 +1880,8 @@ impl NativeEncoder {
                 }
             }
             self.update_events(state, &mut produced)?;
-            if !produced {
-                let mut ignored = None;
-                self.try_submit(&mut ignored)?;
-            }
+            let mut ignored = None;
+            self.try_submit(&mut ignored)?;
         }
         Ok(())
     }
@@ -995,69 +1912,69 @@ impl NativeEncoder {
 
     fn try_submit(&mut self, pace_remaining_100ns: &mut Option<i64>) -> Result<()> {
         *pace_remaining_100ns = None;
-        let Some(pool) = self.pool.as_ref() else {
-            return Ok(());
-        };
-        for _ in 0..4 {
-            let Ok(next) = pool.TryGetNextFrame() else {
-                break;
-            };
-            let size = next.ContentSize()?;
-            if size.Width != self.capture_size.Width || size.Height != self.capture_size.Height {
-                let _ = next.Close();
-                if let Some(old) = self.latest.take() {
-                    let _ = old.Close();
-                }
-                self.capture_size = size;
-                pool.Recreate(
-                    &self.capture_device,
-                    DirectXPixelFormat::B8G8R8A8UIntNormalized,
-                    2,
-                    self.capture_size,
-                )?;
-                return Ok(());
-            }
-            if let Some(old) = self.latest.replace(next) {
-                let _ = old.Close();
-            }
-        }
+        self.capture.drain()?;
         if !self.wants_input || self.waiting_for_output {
             return Ok(());
         }
-        let Some(latest) = self.latest.as_ref() else {
-            return Ok(());
-        };
 
-        let captured = latest.SystemRelativeTime()?.Duration;
-        if self.first_capture == 0 {
-            self.first_capture = captured;
-        }
-        let has_new_frame = !self.has_encoded || captured > self.last_capture;
-        if !self.keyframe && !has_new_frame {
-            return Ok(());
-        }
-
-        let now = Instant::now();
-        if self.has_encoded && (!self.keyframe || !has_new_frame) {
-            let min_interval_100ns = if self.keyframe {
-                self.duration
+        let (nv12, time, cap_age_ms, queue_ms, conv_ms, present_100ns) =
+            if let Some(acquired) = self.capture.acquire(self.has_encoded)? {
+                let submit_start_100ns = query_qpc_100ns();
+                let cap_age_ms =
+                    ((acquired.arrived_100ns - acquired.present_100ns) as f64 / 10_000.0).max(0.0);
+                let queue_ms =
+                    ((submit_start_100ns - acquired.arrived_100ns) as f64 / 10_000.0).max(0.0);
+                if self.first_capture == 0 {
+                    self.first_capture = acquired.capture_stamp;
+                }
+                let mut time = acquired.capture_stamp - self.first_capture;
+                if self.last_time >= time {
+                    time = self.last_time + self.duration;
+                }
+                let conv_start = Instant::now();
+                let idx = self.convert(
+                    &acquired.texture,
+                    acquired.source_width,
+                    acquired.source_height,
+                    acquired.cursor.as_ref(),
+                )?;
+                let conv_ms = conv_start.elapsed().as_secs_f64() * 1000.0;
+                let present_100ns = acquired.present_100ns;
+                drop(acquired);
+                self.last_nv12_idx = Some(idx);
+                (
+                    self.nv12_pool[idx].texture.clone(),
+                    time,
+                    cap_age_ms,
+                    queue_ms,
+                    conv_ms,
+                    present_100ns,
+                )
+            } else if self.keyframe && self.has_encoded {
+                let Some(idx) = self.last_nv12_idx else {
+                    return Ok(());
+                };
+                let elapsed_100ns =
+                    (Instant::now().saturating_duration_since(self.last_submit).as_nanos() / 100)
+                        as i64;
+                if elapsed_100ns < self.duration {
+                    *pace_remaining_100ns = Some(self.duration - elapsed_100ns);
+                    return Ok(());
+                }
+                let time = self.last_time + self.duration;
+                let now_100ns = query_qpc_100ns();
+                (
+                    self.nv12_pool[idx].texture.clone(),
+                    time,
+                    0.0,
+                    0.0,
+                    0.0,
+                    now_100ns,
+                )
             } else {
-                self.duration * 4 / 5
-            };
-            let elapsed_100ns = (now.saturating_duration_since(self.last_submit).as_nanos() / 100) as i64;
-            if elapsed_100ns < min_interval_100ns {
-                *pace_remaining_100ns = Some(min_interval_100ns - elapsed_100ns);
                 return Ok(());
-            }
-        }
+            };
 
-        let mut time = captured - self.first_capture;
-        if self.last_time >= time {
-            time = self.last_time + self.duration;
-        }
-        let access: IDirect3DDxgiInterfaceAccess = latest.Surface()?.cast()?;
-        let picture: ID3D11Texture2D = unsafe { access.GetInterface() }?;
-        let nv12 = self.convert(&picture)?;
         let buffer = unsafe {
             MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, &nv12, 0, false)
         }?;
@@ -1073,13 +1990,16 @@ impl NativeEncoder {
         if self.keyframe {
             set_codec_u32(&self.codec, &CODECAPI_AVEncVideoForceKeyFrame, 1)?;
         }
+        self.pending_cap_age_ms = cap_age_ms;
+        self.pending_queue_ms = queue_ms;
+        self.pending_conv_ms = conv_ms;
+        self.pending_present_100ns = present_100ns;
         self.submit_at = Instant::now();
         unsafe { self.transform.ProcessInput(self.input_id, &sample, 0) }?;
         self.keyframe = false;
         self.wants_input = false;
         self.waiting_for_output = true;
         self.has_encoded = true;
-        self.last_capture = captured;
         self.last_time = time;
         self.last_submit = self.submit_at;
         Ok(())
@@ -1110,7 +2030,8 @@ impl NativeEncoder {
             return Ok(());
         };
 
-        let encode_us = self.submit_at.elapsed().as_micros().min(u128::from(u32::MAX)) as u32;
+        let encode_elapsed = self.submit_at.elapsed();
+        let encode_us = encode_elapsed.as_micros().min(u128::from(u32::MAX)) as u32;
         let time = unsafe { storage.GetSampleTime() }?;
         if self.log_enabled {
             if time != self.last_time {
@@ -1120,28 +2041,30 @@ impl NativeEncoder {
                     (self.last_time - time) as f64 / 10_000.0
                 );
             }
-            let (mut qpc, mut qpf) = (0i64, 0i64);
-            unsafe {
-                let _ = QueryPerformanceCounter(&mut qpc);
-                let _ = QueryPerformanceFrequency(&mut qpf);
-            }
-            if qpf > 0 {
-                let now_100ns = (qpc as f64) * 10_000_000.0 / (qpf as f64);
-                let age_ms = (now_100ns - self.last_capture as f64) / 10_000.0;
-                self.capture_age_sum_ms += age_ms;
-                self.capture_age_max_ms = self.capture_age_max_ms.max(age_ms);
-                self.capture_age_count += 1;
-                if self.capture_age_count >= 60 {
-                    eprintln!(
-                        "[remoters:win] wgc_to_encoded avg={:.2}ms max={:.2}ms (n={})",
-                        self.capture_age_sum_ms / f64::from(self.capture_age_count),
-                        self.capture_age_max_ms,
-                        self.capture_age_count
-                    );
-                    self.capture_age_sum_ms = 0.0;
-                    self.capture_age_max_ms = 0.0;
-                    self.capture_age_count = 0;
-                }
+            let enc_ms = encode_elapsed.as_secs_f64() * 1000.0;
+            let total_ms = ((query_qpc_100ns() - self.pending_present_100ns) as f64 / 10_000.0)
+                .max(0.0);
+            self.stats.cap_age_sum_ms += self.pending_cap_age_ms;
+            self.stats.queue_sum_ms += self.pending_queue_ms;
+            self.stats.conv_sum_ms += self.pending_conv_ms;
+            self.stats.enc_sum_ms += enc_ms;
+            self.stats.total_sum_ms += total_ms;
+            self.stats.total_max_ms = self.stats.total_max_ms.max(total_ms);
+            self.stats.count += 1;
+            if self.stats.count >= 60 {
+                let n = f64::from(self.stats.count);
+                eprintln!(
+                    "[remoters:win] backend={} cap_age={:.2}ms queue={:.2}ms conv={:.2}ms enc={:.2}ms total={:.2}ms max={:.2}ms (n={})",
+                    self.capture.name(),
+                    self.stats.cap_age_sum_ms / n,
+                    self.stats.queue_sum_ms / n,
+                    self.stats.conv_sum_ms / n,
+                    self.stats.enc_sum_ms / n,
+                    self.stats.total_sum_ms / n,
+                    self.stats.total_max_ms,
+                    self.stats.count,
+                );
+                self.stats = StageStats::default();
             }
         }
 
@@ -1220,14 +2143,85 @@ impl NativeEncoder {
         Ok(())
     }
 
-    fn convert(&mut self, picture: &ID3D11Texture2D) -> Result<ID3D11Texture2D> {
+    fn ensure_cursor_view(
+        &mut self,
+        cursor: &CursorOverlay,
+    ) -> Result<(ID3D11VideoProcessorInputView, u32, u32)> {
+        let enumerator = self.enumerator.as_ref().unwrap();
+        let bw = cursor.bitmap.width;
+        let bh = cursor.bitmap.height;
+        let needs_alloc = match &self.cursor_cache {
+            Some(cache) => cache.width != bw || cache.height != bh,
+            None => true,
+        };
+        if needs_alloc {
+            let texture = create_bgra_texture(&self.gpu.device, bw, bh)?;
+            let in_desc = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
+                ViewDimension: D3D11_VPIV_DIMENSION_TEXTURE2D,
+                ..Default::default()
+            };
+            let mut view = None;
+            unsafe {
+                self.gpu.video.CreateVideoProcessorInputView(
+                    &texture,
+                    enumerator,
+                    &in_desc,
+                    Some(&mut view),
+                )
+            }?;
+            let view = view.context("Could not create cursor input view.")?;
+            unsafe {
+                self.gpu.context.UpdateSubresource(
+                    &texture,
+                    0,
+                    None,
+                    cursor.bitmap.bgra.as_ptr().cast(),
+                    bw * 4,
+                    0,
+                );
+            }
+            self.cursor_cache = Some(CursorCache {
+                generation: cursor.generation,
+                width: bw,
+                height: bh,
+                texture,
+                view,
+            });
+        } else if let Some(cache) = &mut self.cursor_cache
+            && cache.generation != cursor.generation
+        {
+            unsafe {
+                self.gpu.context.UpdateSubresource(
+                    &cache.texture,
+                    0,
+                    None,
+                    cursor.bitmap.bgra.as_ptr().cast(),
+                    bw * 4,
+                    0,
+                );
+            }
+            cache.generation = cursor.generation;
+        }
+        let cache = self.cursor_cache.as_ref().unwrap();
+        Ok((cache.view.clone(), cache.width, cache.height))
+    }
+
+    fn convert(
+        &mut self,
+        picture: &ID3D11Texture2D,
+        source_width: i32,
+        source_height: i32,
+        cursor: Option<&CursorOverlay>,
+    ) -> Result<usize> {
         let mut source = D3D11_TEXTURE2D_DESC::default();
         unsafe { picture.GetDesc(&mut source) };
         if self.processor.is_none()
             || self.input_width != source.Width
             || self.input_height != source.Height
         {
+            self.cursor_cache = None;
             self.nv12_pool.clear();
+            self.last_nv12_idx = None;
             self.enumerator = None;
             self.processor = None;
             let content = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
@@ -1240,17 +2234,20 @@ impl NativeEncoder {
                 ..Default::default()
             };
             let enumerator = unsafe { self.gpu.video.CreateVideoProcessorEnumerator(&content) }?;
+            let mut caps = D3D11_VIDEO_PROCESSOR_CAPS::default();
+            let max_streams = if unsafe { enumerator.GetVideoProcessorCaps(&mut caps) }.is_ok() {
+                caps.MaxInputStreams
+            } else {
+                1
+            };
             let processor = unsafe { self.gpu.video.CreateVideoProcessor(&enumerator, 0) }?;
             self.enumerator = Some(enumerator);
             self.processor = Some(processor);
+            self.max_input_streams = max_streams;
             self.input_width = source.Width;
             self.input_height = source.Height;
         }
         self.ensure_nv12_pool()?;
-        let enumerator = self.enumerator.as_ref().unwrap();
-        let processor = self.processor.as_ref().unwrap();
-        let slot = &self.nv12_pool[self.nv12_index];
-        self.nv12_index = (self.nv12_index + 1) % self.nv12_pool.len();
 
         let in_desc = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
             ViewDimension: D3D11_VPIV_DIMENSION_TEXTURE2D,
@@ -1260,18 +2257,63 @@ impl NativeEncoder {
         unsafe {
             self.gpu.video.CreateVideoProcessorInputView(
                 picture,
-                enumerator,
+                self.enumerator.as_ref().unwrap(),
                 &in_desc,
                 Some(&mut input_view),
             )
         }?;
         let input_view = input_view.context("Could not create BGRA input view.")?;
 
+        let mut cursor_rects = None;
+        if self.max_input_streams >= 2
+            && source_width > 0
+            && source_height > 0
+            && let Some(cursor) = cursor
+        {
+            let bw = cursor.bitmap.width as i32;
+            let bh = cursor.bitmap.height as i32;
+            let left = cursor.x.max(0);
+            let top = cursor.y.max(0);
+            let right = (cursor.x + bw).min(source_width);
+            let bottom = (cursor.y + bh).min(source_height);
+            if left < right && top < bottom {
+                let (cursor_view, _, _) = self.ensure_cursor_view(cursor)?;
+                let src_rect = RECT {
+                    left: left - cursor.x,
+                    top: top - cursor.y,
+                    right: right - cursor.x,
+                    bottom: bottom - cursor.y,
+                };
+                let scale_x = f64::from(self.output_width) / f64::from(source_width);
+                let scale_y = f64::from(self.output_height) / f64::from(source_height);
+                let dst_left = (f64::from(left) * scale_x).round() as i32;
+                let dst_top = (f64::from(top) * scale_y).round() as i32;
+                let dst_right = ((f64::from(right) * scale_x).round() as i32)
+                    .max(dst_left + 1)
+                    .min(self.output_width as i32);
+                let dst_bottom = ((f64::from(bottom) * scale_y).round() as i32)
+                    .max(dst_top + 1)
+                    .min(self.output_height as i32);
+                let dst_rect = RECT {
+                    left: dst_left,
+                    top: dst_top,
+                    right: dst_right,
+                    bottom: dst_bottom,
+                };
+                cursor_rects = Some((cursor_view, src_rect, dst_rect));
+            }
+        }
+
+        let processor = self.processor.as_ref().unwrap();
+        let idx = self.nv12_index;
+        self.nv12_index = (self.nv12_index + 1) % self.nv12_pool.len();
+        let slot = &self.nv12_pool[idx];
+
         let source_rect = RECT {
             left: 0,
             top: 0,
-            right: self.capture_size.Width,
-            bottom: self.capture_size.Height,
+            right: source_width,
+            bottom: source_height,
         };
         let dest_rect = RECT {
             left: 0,
@@ -1279,11 +2321,46 @@ impl NativeEncoder {
             right: self.output_width as i32,
             bottom: self.output_height as i32,
         };
-        let mut streams = [D3D11_VIDEO_PROCESSOR_STREAM {
-            Enable: TRUE,
-            pInputSurface: ManuallyDrop::new(Some(input_view)),
-            ..Default::default()
-        }];
+        let mut streams = [
+            D3D11_VIDEO_PROCESSOR_STREAM {
+                Enable: TRUE,
+                pInputSurface: ManuallyDrop::new(Some(input_view)),
+                ..Default::default()
+            },
+            D3D11_VIDEO_PROCESSOR_STREAM::default(),
+        ];
+        let stream_count = if let Some((cursor_view, c_src, c_dst)) = cursor_rects {
+            streams[1] = D3D11_VIDEO_PROCESSOR_STREAM {
+                Enable: TRUE,
+                pInputSurface: ManuallyDrop::new(Some(cursor_view)),
+                ..Default::default()
+            };
+            unsafe {
+                self.gpu
+                    .video_context
+                    .VideoProcessorSetStreamFrameFormat(
+                        processor,
+                        1,
+                        D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
+                    );
+                self.gpu
+                    .video_context
+                    .VideoProcessorSetStreamSourceRect(processor, 1, true, Some(&c_src));
+                self.gpu
+                    .video_context
+                    .VideoProcessorSetStreamDestRect(processor, 1, true, Some(&c_dst));
+                self.gpu
+                    .video_context
+                    .VideoProcessorSetStreamAutoProcessingMode(processor, 1, false);
+                self.gpu
+                    .video_context
+                    .VideoProcessorSetStreamAlpha(processor, 1, true, 1.0);
+            }
+            2
+        } else {
+            1
+        };
+
         unsafe {
             self.gpu
                 .video_context
@@ -1297,14 +2374,20 @@ impl NativeEncoder {
             self.gpu
                 .video_context
                 .VideoProcessorSetOutputColorSpace(processor, &BT709_FULL_RANGE);
-            let blt = self
-                .gpu
-                .video_context
-                .VideoProcessorBlt(processor, &slot.view, 0, &streams);
+            let blt = self.gpu.video_context.VideoProcessorBlt(
+                processor,
+                &slot.view,
+                0,
+                &streams[..stream_count],
+            );
             let _ = ManuallyDrop::take(&mut streams[0].pInputSurface);
+            if stream_count == 2 {
+                let _ = ManuallyDrop::take(&mut streams[1].pInputSurface);
+            }
             blt?;
+            self.gpu.context.Flush();
         }
-        Ok(slot.texture.clone())
+        Ok(idx)
     }
 }
 
@@ -1506,6 +2589,7 @@ fn capture(
     wake: &OwnedHandle,
     output: &mpsc::Sender<Result<AccessUnit>>,
 ) -> Result<()> {
+    let _ = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST) };
     let bitrate = super::target_bitrate(format);
     let mut encoder = NativeEncoder::new(
         format.width.into(),
