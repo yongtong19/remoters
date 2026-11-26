@@ -1,5 +1,8 @@
+#import <AppKit/AppKit.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
+#include <math.h>
+#include <stdbool.h>
 #include <unistd.h>
 
 // CoreGraphics has no public API for creating an independent display. Resolve
@@ -40,15 +43,26 @@ static BOOL activate_mode(CGDirectDisplayID display, uint32_t width, uint32_t he
     for (int attempt = 0; attempt < 30; ++attempt) {
         CFArrayRef modes = CGDisplayCopyAllDisplayModes(display, NULL);
         if (modes) {
-            BOOL found = NO;
-            for (CFIndex index = 0; index < CFArrayGetCount(modes); ++index) {
+            CGDisplayModeRef exact_match = NULL;
+            CGDisplayModeRef fallback_match = NULL;
+            const CFIndex count = CFArrayGetCount(modes);
+            for (CFIndex index = 0; index < count; ++index) {
                 CGDisplayModeRef mode = (CGDisplayModeRef)CFArrayGetValueAtIndex(modes, index);
                 if (CGDisplayModeGetPixelWidth(mode) != width ||
-                    CGDisplayModeGetPixelHeight(mode) != height ||
-                    CGDisplayModeGetRefreshRate(mode) < fps - 0.1) continue;
-                found = CGDisplaySetDisplayMode(display, mode, NULL) == kCGErrorSuccess;
-                if (found) break;
+                    CGDisplayModeGetPixelHeight(mode) != height) {
+                    continue;
+                }
+                const double rate = CGDisplayModeGetRefreshRate(mode);
+                if (rate >= (double)fps - 0.1) {
+                    exact_match = mode;
+                    break;
+                }
+                if (!fallback_match && rate <= 0.0) {
+                    fallback_match = mode;
+                }
             }
+            CGDisplayModeRef chosen = exact_match ? exact_match : fallback_match;
+            BOOL found = chosen && CGDisplaySetDisplayMode(display, chosen, NULL) == kCGErrorSuccess;
             CFRelease(modes);
             if (found && CGDisplayIsActive(display) &&
                 CGDisplayPixelsWide(display) == width && CGDisplayPixelsHigh(display) == height) {
@@ -58,6 +72,15 @@ static BOOL activate_mode(CGDirectDisplayID display, uint32_t width, uint32_t he
         usleep(50000);
     }
     return NO;
+}
+
+bool remoters_virtual_display_available(void) {
+    @autoreleasepool {
+        return NSClassFromString(@"CGVirtualDisplayDescriptor") != Nil &&
+               NSClassFromString(@"CGVirtualDisplay") != Nil &&
+               NSClassFromString(@"CGVirtualDisplayMode") != Nil &&
+               NSClassFromString(@"CGVirtualDisplaySettings") != Nil;
+    }
 }
 
 void *remoters_virtual_display_create(
@@ -75,7 +98,7 @@ void *remoters_virtual_display_create(
             [descriptor setQueue:dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0)];
             [descriptor setMaxPixelsWide:width];
             [descriptor setMaxPixelsHigh:height];
-            [descriptor setSizeInMillimeters:CGSizeMake(width / 6.0, height / 6.0)];
+            [descriptor setSizeInMillimeters:CGSizeMake(width / 5.0, height / 5.0)];
             const uint32_t serial = arc4random_uniform(UINT32_MAX - 1) + 1;
             [descriptor setVendorID:0x5253];
             [descriptor setProductID:1];
@@ -112,5 +135,31 @@ void remoters_virtual_display_destroy(void *display) {
     @autoreleasepool {
         id retained_display = (__bridge_transfer id)display;
         (void)retained_display;
+    }
+}
+
+bool remoters_macos_fullscreen_pixels(uint32_t *display_id, uint32_t *width, uint32_t *height) {
+    if (!width || !height || ![NSThread isMainThread]) return false;
+    @autoreleasepool {
+        NSScreen *screen = [NSScreen mainScreen];
+        if (!screen) screen = NSScreen.screens.firstObject;
+        if (!screen) return false;
+        CGFloat scale = screen.backingScaleFactor;
+        if (scale < 1.0) scale = 1.0;
+        NSRect frame = screen.frame;
+        NSEdgeInsets insets = {0, 0, 0, 0};
+        if (@available(macOS 12.0, *)) {
+            insets = screen.safeAreaInsets;
+        }
+        const double usable_w = (frame.size.width - insets.left - insets.right) * scale;
+        const double usable_h = (frame.size.height - insets.top - insets.bottom) * scale;
+        if (usable_w < 2.0 || usable_h < 2.0) return false;
+        if (display_id) {
+            NSNumber *num = screen.deviceDescription[@"NSScreenNumber"];
+            *display_id = num ? num.unsignedIntValue : 0;
+        }
+        *width = (uint32_t)llround(usable_w);
+        *height = (uint32_t)llround(usable_h);
+        return true;
     }
 }

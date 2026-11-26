@@ -25,7 +25,7 @@ use tokio::{
 };
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
-use super::{Pairing, is_local, is_local_peer, require_local};
+use super::{Pairing, is_allowed_ip, is_allowed_peer, require_allowed};
 
 const SESSION: &str = "/session";
 const SDP: &str = "application/sdp";
@@ -40,7 +40,10 @@ pub(crate) struct SignalingHost {
 
 impl SignalingHost {
     pub fn bind(address: SocketAddrV4) -> Result<Self> {
-        ensure!(is_local(*address.ip()), "Use a local IPv4 address.");
+        ensure!(
+            is_allowed_ip(*address.ip()),
+            "Use a private, shared VPN (100.64.0.0/10), link-local, or loopback IPv4 address."
+        );
         let (pairing, certificate, key) = Pairing::identity()?;
         let config = ServerConfig::builder_with_provider(Arc::new(default_provider()))
             .with_safe_default_protocol_versions()?
@@ -72,8 +75,8 @@ impl SignalingHost {
     ) -> Result<SocketAddr> {
         let (socket, peer) = self.listener.accept().await?;
         ensure!(
-            is_local_peer(peer),
-            "The signaling peer must use a local IPv4 address."
+            is_allowed_peer(peer),
+            "The signaling peer must use a private, shared VPN, link-local, or loopback IPv4 address."
         );
         let expected = bearer(&self.pairing);
         let answer = Mutex::new(Some(answer));
@@ -102,7 +105,7 @@ impl SignalingHost {
 }
 
 pub(crate) async fn offer(address: SocketAddrV4, pairing: &Pairing, sdp: String) -> Result<String> {
-    require_local(address)?;
+    require_allowed(address)?;
     timeout(CONNECT_TIMEOUT, async {
         let provider = Arc::new(default_provider());
         let verifier = pairing.verifier(provider.clone());

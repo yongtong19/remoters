@@ -6,8 +6,12 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 #[cfg(target_os = "macos")]
 use enigo::Coordinate;
-use enigo::{Axis, Direction, Enigo, Keyboard, Mouse, Settings};
+#[cfg(not(target_os = "linux"))]
+use enigo::Keyboard;
+use enigo::{Axis, Direction, Enigo, Mouse, Settings};
 pub mod display;
+pub mod linux;
+pub mod wayland_portal;
 
 #[cfg(target_os = "windows")]
 unsafe extern "C" {
@@ -25,6 +29,10 @@ pub use macos_mouse::install_drag_handlers;
 pub fn request_host_permissions(view_only: bool) -> Result<()> {
     #[cfg(target_os = "macos")]
     macos::request_screen_recording()?;
+    #[cfg(target_os = "linux")]
+    if wayland_portal::is_wayland_session() {
+        return Ok(());
+    }
     if !view_only {
         Enigo::new(&Settings::default())
             .map_err(|e| anyhow!("Could not enable keyboard and mouse input: {e}"))?;
@@ -33,10 +41,12 @@ pub fn request_host_permissions(view_only: bool) -> Result<()> {
 }
 
 pub struct NativeDesktop {
-    monitor: Monitor,
+    monitor: Option<Monitor>,
     bounds: (i32, i32, u32, u32),
     bounds_at: Instant,
     input: Option<Enigo>,
+    #[cfg(target_os = "linux")]
+    wayland: Option<std::sync::Arc<wayland_portal::WaylandPortalSession>>,
     #[cfg(target_os = "macos")]
     middle_mouse: Option<macos_mouse::MiddleMouse>,
     keys: HashSet<u16>,
@@ -46,6 +56,9 @@ pub struct NativeDesktop {
 
 impl NativeDesktop {
     pub fn new(view_only: bool, monitor: Monitor) -> Result<Self> {
+        #[cfg(target_os = "linux")]
+        let bounds = linux::monitor_physical_bounds(&monitor)?;
+        #[cfg(not(target_os = "linux"))]
         let bounds = (
             monitor.x()?,
             monitor.y()?,
@@ -70,10 +83,12 @@ impl NativeDesktop {
             .map(|input| macos_mouse::MiddleMouse::new(input.get_marker_value()))
             .transpose()?;
         Ok(Self {
-            monitor,
+            monitor: Some(monitor),
             bounds,
             bounds_at: Instant::now(),
             input,
+            #[cfg(target_os = "linux")]
+            wayland: None,
             #[cfg(target_os = "macos")]
             middle_mouse,
             keys: HashSet::new(),
@@ -82,22 +97,72 @@ impl NativeDesktop {
         })
     }
 
+    #[cfg(target_os = "linux")]
+    pub fn new_wayland(
+        view_only: bool,
+        portal: std::sync::Arc<wayland_portal::WaylandPortalSession>,
+        width: u32,
+        height: u32,
+    ) -> Result<Self> {
+        // Mutter and xdg-desktop-portal expect `NotifyPointerMotionAbsolute` coordinates
+        // in the logical `stream.size()` space (e.g. 1920x1080 on a 3840x2160 @ 2x display),
+        // not the physical PipeWire buffer dimensions passed by `sharing.rs`.
+        let (bounds_w, bounds_h) =
+            resolve_wayland_pointer_dimensions(portal.dimensions(), width, height);
+        Ok(Self {
+            monitor: None,
+            bounds: (0, 0, bounds_w, bounds_h),
+            bounds_at: Instant::now(),
+            input: None,
+            wayland: (!view_only && portal.input_enabled()).then_some(portal),
+            keys: HashSet::new(),
+            buttons: HashSet::new(),
+            scroll_remainder: (0, 0),
+        })
+    }
+
+    fn has_input(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        if self.wayland.is_some() {
+            return true;
+        }
+        self.input.is_some()
+    }
+
     fn monitor_bounds(&mut self) -> Result<(i32, i32, u32, u32)> {
-        if self.bounds_at.elapsed() >= Duration::from_secs(2) {
-            self.bounds = (
-                self.monitor.x()?,
-                self.monitor.y()?,
-                self.monitor.width()?,
-                self.monitor.height()?,
-            );
+        if let Some(monitor) = &self.monitor
+            && self.bounds_at.elapsed() >= Duration::from_secs(2)
+        {
+            #[cfg(target_os = "linux")]
+            {
+                self.bounds = linux::monitor_physical_bounds(monitor)?;
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                self.bounds = (
+                    monitor.x()?,
+                    monitor.y()?,
+                    monitor.width()?,
+                    monitor.height()?,
+                );
+            }
             self.bounds_at = Instant::now();
         }
         Ok(self.bounds)
     }
 
     fn move_pointer(&mut self, point: Point) -> Result<()> {
+        if !self.has_input() {
+            return Ok(());
+        }
+        let (origin_x, origin_y, w, h) = self.monitor_bounds()?;
+        #[cfg(target_os = "linux")]
+        if let Some(wayland) = &self.wayland {
+            let (x, y) = map_wayland_pointer(point, w, h);
+            wayland.pointer_motion_absolute(x, y);
+            return Ok(());
+        }
         if self.input.is_some() {
-            let (origin_x, origin_y, w, h) = self.monitor_bounds()?;
             let x = origin_x + map_axis(point.x, w);
             let y = origin_y + map_axis(point.y, h);
             #[cfg(target_os = "macos")]
@@ -116,6 +181,10 @@ impl NativeDesktop {
                 unsafe { remoters_move_pointer(x, y) },
                 "Windows rejected remote pointer movement."
             );
+            #[cfg(target_os = "linux")]
+            if let Some(input) = &mut self.input {
+                linux::move_pointer(input, x, y)?;
+            }
         }
         Ok(())
     }
@@ -125,13 +194,32 @@ fn map_axis(normalized: u16, pixels: u32) -> i32 {
     ((u64::from(normalized) * u64::from(pixels.saturating_sub(1)) + 32767) / 65535) as i32
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn resolve_wayland_pointer_dimensions(
+    portal_dimensions: Option<(u32, u32)>,
+    fallback_width: u32,
+    fallback_height: u32,
+) -> (u32, u32) {
+    match portal_dimensions {
+        Some((w, h)) if w >= 2 && h >= 2 => (w, h),
+        _ => (fallback_width.max(2), fallback_height.max(2)),
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn map_wayland_pointer(point: Point, width: u32, height: u32) -> (f64, f64) {
+    let x = (f64::from(point.x) / 65535.0) * f64::from(width.saturating_sub(1));
+    let y = (f64::from(point.y) / 65535.0) * f64::from(height.saturating_sub(1));
+    (x, y)
+}
+
 impl NativeDesktop {
     pub fn input(&mut self, event: Input) -> Result<()> {
         match event {
             Input::Move(at) => self.move_pointer(at)?,
             Input::Button { at, button, down } => {
                 self.move_pointer(at)?;
-                if self.input.is_some() && down != self.buttons.contains(&button) {
+                if self.has_input() && down != self.buttons.contains(&button) {
                     self.button(button, down)?;
                     if down {
                         self.buttons.insert(button);
@@ -141,6 +229,18 @@ impl NativeDesktop {
                 }
             }
             Input::Key { code, down } => {
+                #[cfg(target_os = "linux")]
+                if let Some(wayland) = &self.wayland {
+                    if down {
+                        if wayland.keyboard_vk(code, true) {
+                            self.keys.insert(code);
+                        }
+                    } else if self.keys.contains(&code) {
+                        wayland.keyboard_vk(code, false);
+                        self.keys.remove(&code);
+                    }
+                    return Ok(());
+                }
                 if let Some(input) = self.input.as_mut() {
                     if down {
                         if native_key(input, code, Direction::Press)? {
@@ -158,6 +258,15 @@ impl NativeDesktop {
                 horizontal,
             } => {
                 self.move_pointer(at)?;
+                #[cfg(target_os = "linux")]
+                if let Some(wayland) = &self.wayland {
+                    self.scroll_remainder.0 -= i32::from(vertical);
+                    self.scroll_remainder.1 += i32::from(horizontal);
+                    let (vertical, horizontal) = self.scroll_remainder;
+                    self.scroll_remainder = (vertical % 120, horizontal % 120);
+                    wayland.pointer_scroll_discrete(vertical / 120, horizontal / 120);
+                    return Ok(());
+                }
                 if let Some(input) = self.input.as_mut() {
                     self.scroll_remainder.0 -= i32::from(vertical);
                     self.scroll_remainder.1 += i32::from(horizontal);
@@ -172,11 +281,17 @@ impl NativeDesktop {
                 }
             }
             Input::Release => self.release(),
+            Input::Gamepad(_) => {}
         }
         Ok(())
     }
 
     fn button(&mut self, button: Button, down: bool) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        if let Some(wayland) = &self.wayland {
+            wayland.pointer_button(button, down);
+            return Ok(());
+        }
         #[cfg(target_os = "macos")]
         if button == Button::Middle
             && let Some(middle) = self.middle_mouse.as_ref()
@@ -195,6 +310,17 @@ impl NativeDesktop {
     }
 
     fn release(&mut self) {
+        #[cfg(target_os = "linux")]
+        if let Some(wayland) = &self.wayland {
+            for code in self.keys.drain() {
+                wayland.keyboard_vk(code, false);
+            }
+            for button in self.buttons.drain() {
+                wayland.pointer_button(button, false);
+            }
+            self.scroll_remainder = (0, 0);
+            return;
+        }
         #[cfg(target_os = "macos")]
         if self.buttons.contains(&Button::Middle) && self.button(Button::Middle, false).is_ok() {
             self.buttons.remove(&Button::Middle);
@@ -219,9 +345,16 @@ impl Drop for NativeDesktop {
 }
 
 pub fn primary_monitor() -> Result<Monitor> {
-    Monitor::all()?
+    let mut monitors = Monitor::all()?;
+    if let Some(pos) = monitors
+        .iter()
+        .position(|monitor| monitor.is_primary().unwrap_or(false))
+    {
+        return Ok(monitors.swap_remove(pos));
+    }
+    monitors
         .into_iter()
-        .find(|monitor| monitor.is_primary().unwrap_or(false))
+        .next()
         .context("No primary display was found.")
 }
 
@@ -238,6 +371,8 @@ pub struct VideoFrame {
     pub surface: gpui::ID3D11Texture2D,
     #[cfg(target_os = "macos")]
     pub surface: screencapturekit::cv::CVPixelBuffer,
+    #[cfg(target_os = "linux")]
+    pub surface: std::sync::Arc<gpui::RenderImage>,
     pub width: u32,
     pub height: u32,
 }
@@ -246,6 +381,11 @@ pub struct VideoFrame {
 fn native_key(input: &mut Enigo, code: u16, direction: Direction) -> Result<bool> {
     input.key(enigo::Key::Other(code.into()), direction)?;
     Ok(true)
+}
+
+#[cfg(target_os = "linux")]
+fn native_key(input: &mut Enigo, code: u16, direction: Direction) -> Result<bool> {
+    linux::inject_key(input, code, direction)
 }
 
 #[cfg(target_os = "macos")]
@@ -380,5 +520,53 @@ mod macos {
             0x26 => 126,
             _ => return None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use remoters_core::Point;
+
+    use super::{map_axis, map_wayland_pointer, resolve_wayland_pointer_dimensions};
+
+    #[test]
+    fn wayland_pointer_dimensions_prefer_portal_logical_stream_size() {
+        // 4K physical PipeWire stream at 2.0x HiDPI scaling reports 1920x1080 logical size.
+        assert_eq!(
+            resolve_wayland_pointer_dimensions(Some((1920, 1080)), 3840, 2160),
+            (1920, 1080)
+        );
+        // Fractional scaling (e.g. 2560x1440 @ 1.5x -> 1707x960) also uses portal logical size.
+        assert_eq!(
+            resolve_wayland_pointer_dimensions(Some((1707, 960)), 2560, 1440),
+            (1707, 960)
+        );
+        // Falls back to physical dimensions when portal omits or zeroes stream size.
+        assert_eq!(
+            resolve_wayland_pointer_dimensions(None, 3840, 2160),
+            (3840, 2160)
+        );
+        assert_eq!(
+            resolve_wayland_pointer_dimensions(Some((0, 0)), 1920, 1080),
+            (1920, 1080)
+        );
+        assert_eq!(resolve_wayland_pointer_dimensions(None, 1, 1), (2, 2));
+    }
+
+    #[test]
+    fn maps_normalized_points_into_wayland_logical_bounds() {
+        let (w, h) = resolve_wayland_pointer_dimensions(Some((1920, 1080)), 3840, 2160);
+        assert_eq!(map_wayland_pointer(Point { x: 0, y: 0 }, w, h), (0.0, 0.0));
+        assert_eq!(
+            map_wayland_pointer(Point { x: 65535, y: 65535 }, w, h),
+            (1919.0, 1079.0)
+        );
+        let (mid_x, mid_y) = map_wayland_pointer(Point { x: 32768, y: 32768 }, w, h);
+        assert!((mid_x - 959.5).abs() < 0.05);
+        assert!((mid_y - 539.5).abs() < 0.05);
+        // Must never exceed logical bounds on 2x HiDPI displays.
+        assert!(mid_x < 1920.0 && mid_y < 1080.0);
+        assert_eq!(map_axis(0, 1920), 0);
+        assert_eq!(map_axis(65535, 1920), 1919);
     }
 }

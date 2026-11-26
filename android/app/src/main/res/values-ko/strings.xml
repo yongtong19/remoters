@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Remoters</string>
+
+    <!-- Navigation & Top Bar -->
+    <string name="tab_connect">연결</string>
+    <string name="tab_devices">내 기기</string>
+    <string name="tab_nearby">주변</string>
+    <string name="tab_account">계정</string>
+    <string name="tab_home">홈</string>
+    <string name="action_add_home">+ 홈</string>
+    <string name="language_picker_title">언어</string>
+    <string name="language_picker_desc">언어 전환</string>
+    <string name="language_system_default">시스템 기본값</string>
+
+    <!-- Connect Screen -->
+    <string name="connect_host_section">호스트 연결</string>
+    <string name="field_host_address">호스트 주소</string>
+    <string name="field_host_address_placeholder">192.168.1.25:47821</string>
+    <string name="field_pairing_code">페어링 코드</string>
+    <string name="field_pairing_code_placeholder">XXXX-XXXX-XXXX-XXXX</string>
+    <string name="action_paste">붙여넣기</string>
+    <string name="action_connect">연결</string>
+    <string name="action_view">보기</string>
+    <string name="err_enter_host_address">호스트 주소를 입력하세요 (예: 192.168.1.25:47821).</string>
+    <string name="err_enter_pairing_code">페어링 코드를 입력하세요.</string>
+    <string name="err_missing_host_or_code">호스트 주소 또는 페어링 코드가 없습니다.</string>
+    <string name="err_device_missing_address_or_code">기기에 호스트 주소 또는 페어링 코드가 없습니다.</string>
+
+    <!-- Stream Quality -->
+    <string name="quality_section_title">스트림 화질</string>
+    <string name="quality_codec">코덱</string>
+    <string name="quality_dynamic_range">다이내믹 레인지</string>
+    <string name="quality_max_fps">최대 FPS</string>
+    <string name="quality_bitrate">비트레이트</string>
+    <string name="quality_frame_pacing">프레임 페이싱</string>
+    <string name="quality_display_resolution">디스플레이 해상도</string>
+    <string name="opt_auto">자동</string>
+    <string name="opt_sdr">SDR</string>
+    <string name="opt_hdr_10bit">HDR 10-bit</string>
+    <string name="opt_low_latency">저지연</string>
+    <string name="opt_balanced">균형</string>
+    <string name="opt_120_hz">120 Hz</string>
+    <string name="opt_1080p">1080p</string>
+    <string name="opt_1440p">1440p</string>
+    <string name="opt_native_resolution">네이티브 · %1$d×%2$d</string>
+    <string name="opt_native_short">네이티브</string>
+
+    <!-- My Devices -->
+    <string name="devices_sign_in_title">로그인하여 내 기기 보기</string>
+    <string name="devices_sign_in_desc">계정에서 공유 중인 호스트가 여기에 표시되며 탭 한 번으로 연결할 수 있습니다.</string>
+    <string name="action_open_account">계정 열기</string>
+    <string name="devices_registered_count">등록된 기기 %1$d대</string>
+    <string name="action_refresh">새로고침</string>
+    <string name="status_refreshing">새로고침 중…</string>
+    <string name="devices_empty">등록된 기기가 아직 없습니다.</string>
+    <string name="status_sharing">공유 중</string>
+    <string name="status_online">온라인</string>
+    <string name="status_offline">오프라인</string>
+    <string name="cd_remove_device">기기 제거</string>
+    <string name="err_load_devices">기기를 불러올 수 없습니다.</string>
+    <string name="err_remove_device">기기를 제거하지 못했습니다.</string>
+
+    <!-- Nearby -->
+    <string name="nearby_header">LAN에서 검색된 호스트</string>
+    <string name="action_scan_lan">LAN 검색</string>
+    <string name="status_scanning">검색 중…</string>
+    <string name="nearby_empty">LAN 호스트를 찾지 못했습니다. 호스트가 같은 Wi-Fi에서 공유 중인지 확인하세요.</string>
+    <string name="action_use">사용</string>
+    <string name="err_lan_scan_failed">LAN 검색에 실패했습니다.</string>
+
+    <!-- Account -->
+    <string name="action_sign_out">로그아웃</string>
+    <string name="account_create_title">계정 만들기</string>
+    <string name="account_sign_in_title">로그인</string>
+    <string name="account_use_existing">기존 계정 사용</string>
+    <string name="account_create_link">계정 만들기</string>
+    <string name="field_server_url">계정 서버 URL</string>
+    <string name="field_username">사용자 이름</string>
+    <string name="field_username_placeholder">alice</string>
+    <string name="field_display_name">표시 이름</string>
+    <string name="field_display_name_placeholder">Alice</string>
+    <string name="field_password">비밀번호</string>
+    <string name="status_working">처리 중…</string>
+    <string name="action_register">가입</string>
+    <string name="action_sign_in">로그인</string>
+    <string name="err_auth_failed">인증 오류</string>
+
+    <!-- Session & Multi-Session -->
+    <string name="session_connecting">호스트에 연결 중…</string>
+    <string name="session_ended_title">세션 종료됨</string>
+    <string name="action_close">닫기</string>
+    <string name="session_mode_view">보기</string>
+    <string name="session_mode_control">제어</string>
+    <string name="session_status_connecting">연결 중</string>
+    <string name="session_status_connected">연결됨</string>
+    <string name="session_status_closed">종료됨</string>
+    <string name="cd_controllers">컨트롤러</string>
+    <string name="cd_collapse">접기</string>
+    <string name="cd_close_session">세션 닫기</string>
+    <string name="cd_mute">음소거</string>
+    <string name="cd_unmute">음소거 해제</string>
+    <string name="cd_keyboard">키보드</string>
+    <string name="cd_home">홈</string>
+    <string name="session_telemetry_title">세션 텔레메트리</string>
+    <string name="stat_e2e_latency">E2E 지연</string>
+    <string name="stat_encode_decode">인코딩 / 디코딩</string>
+    <string name="stat_rtt_loss">RTT / 손실</string>
+    <string name="stat_fps">FPS</string>
+    <string name="stat_bitrate">비트레이트</string>
+    <string name="stat_gamepads">게임패드</string>
+    <string name="stat_gamepads_connected">%1$d개 연결됨</string>
+    <string name="session_bitrate_target">목표 비트레이트 (Mbps)</string>
+    <string name="session_frame_pacing_label">프레임 페이싱</string>
+    <string name="action_disconnect">연결 해제</string>
+    <string name="err_session_start_failed">세션을 시작하지 못했습니다.</string>
+    <string name="sessions_active_label">활성 세션 (%1$d)</string>
+    <string name="session_switch_hint">세션</string>
+    <string name="session_input_mode_label">입력 모드</string>
+    <string name="input_mode_touch">터치</string>
+    <string name="input_mode_mouse">마우스</string>
+    <string name="mouse_mode_hint">한 손가락 이동/탭 · 더블탭 드래그 · 두 손가락 우클릭/스크롤</string>
+    <string name="mouse_btn_left">좌</string>
+    <string name="mouse_btn_middle">중</string>
+    <string name="mouse_btn_right">우</string>
+    <string name="mouse_btn_drag">드래그</string>
+    <string name="cd_switch_input_mode">입력 모드 전환</string>
+    <string name="cd_expand_mouse_bar">마우스 버튼 표시</string>
+    <string name="cd_minimize_mouse_bar">마우스 버튼 숨기기</string>
+</resources>

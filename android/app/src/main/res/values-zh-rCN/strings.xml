@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Remoters</string>
+
+    <!-- Navigation & Top Bar -->
+    <string name="tab_connect">连接</string>
+    <string name="tab_devices">我的设备</string>
+    <string name="tab_nearby">附近设备</string>
+    <string name="tab_account">账号</string>
+    <string name="tab_home">主页</string>
+    <string name="action_add_home">+ 主页</string>
+    <string name="language_picker_title">语言</string>
+    <string name="language_picker_desc">切换语言</string>
+    <string name="language_system_default">跟随系统</string>
+
+    <!-- Connect Screen -->
+    <string name="connect_host_section">主机连接</string>
+    <string name="field_host_address">主机地址</string>
+    <string name="field_host_address_placeholder">192.168.1.25:47821</string>
+    <string name="field_pairing_code">配对码</string>
+    <string name="field_pairing_code_placeholder">XXXX-XXXX-XXXX-XXXX</string>
+    <string name="action_paste">粘贴</string>
+    <string name="action_connect">连接</string>
+    <string name="action_view">观看</string>
+    <string name="err_enter_host_address">请输入主机地址（例如 192.168.1.25:47821）。</string>
+    <string name="err_enter_pairing_code">请输入配对码。</string>
+    <string name="err_missing_host_or_code">缺少主机地址或配对码。</string>
+    <string name="err_device_missing_address_or_code">该设备缺少主机地址或配对码。</string>
+
+    <!-- Stream Quality -->
+    <string name="quality_section_title">串流画质</string>
+    <string name="quality_codec">编码器</string>
+    <string name="quality_dynamic_range">动态范围</string>
+    <string name="quality_max_fps">最高帧率</string>
+    <string name="quality_bitrate">码率</string>
+    <string name="quality_frame_pacing">帧同步</string>
+    <string name="quality_display_resolution">显示分辨率</string>
+    <string name="opt_auto">自动</string>
+    <string name="opt_sdr">SDR</string>
+    <string name="opt_hdr_10bit">HDR 10-bit</string>
+    <string name="opt_low_latency">低延迟</string>
+    <string name="opt_balanced">平滑</string>
+    <string name="opt_120_hz">120 Hz</string>
+    <string name="opt_1080p">1080p</string>
+    <string name="opt_1440p">1440p</string>
+    <string name="opt_native_resolution">原生 · %1$d×%2$d</string>
+    <string name="opt_native_short">原生</string>
+
+    <!-- My Devices -->
+    <string name="devices_sign_in_title">登录以查看你的设备</string>
+    <string name="devices_sign_in_desc">同一账号下正在共享的主机会显示在这里，点击即可一键连接。</string>
+    <string name="action_open_account">前往账号</string>
+    <string name="devices_registered_count">已注册 %1$d 台设备</string>
+    <string name="action_refresh">刷新</string>
+    <string name="status_refreshing">正在刷新…</string>
+    <string name="devices_empty">暂无已注册设备。</string>
+    <string name="status_sharing">共享中</string>
+    <string name="status_online">在线</string>
+    <string name="status_offline">离线</string>
+    <string name="cd_remove_device">移除设备</string>
+    <string name="err_load_devices">无法加载设备列表。</string>
+    <string name="err_remove_device">移除设备失败。</string>
+
+    <!-- Nearby -->
+    <string name="nearby_header">局域网发现的主机</string>
+    <string name="action_scan_lan">扫描局域网</string>
+    <string name="status_scanning">正在扫描…</string>
+    <string name="nearby_empty">暂未发现局域网主机，请确保主机在同一 Wi-Fi 下开启共享。</string>
+    <string name="action_use">使用</string>
+    <string name="err_lan_scan_failed">局域网扫描失败。</string>
+
+    <!-- Account -->
+    <string name="action_sign_out">退出登录</string>
+    <string name="account_create_title">创建账号</string>
+    <string name="account_sign_in_title">登录</string>
+    <string name="account_use_existing">使用已有账号</string>
+    <string name="account_create_link">注册账号</string>
+    <string name="field_server_url">账号服务器地址</string>
+    <string name="field_username">用户名</string>
+    <string name="field_username_placeholder">alice</string>
+    <string name="field_display_name">显示名称</string>
+    <string name="field_display_name_placeholder">Alice</string>
+    <string name="field_password">密码</string>
+    <string name="status_working">处理中…</string>
+    <string name="action_register">注册</string>
+    <string name="action_sign_in">登录</string>
+    <string name="err_auth_failed">身份验证失败</string>
+
+    <!-- Session & Multi-Session -->
+    <string name="session_connecting">正在连接主机…</string>
+    <string name="session_ended_title">会话已结束</string>
+    <string name="action_close">关闭</string>
+    <string name="session_mode_view">观看</string>
+    <string name="session_mode_control">控制</string>
+    <string name="session_status_connecting">连接中</string>
+    <string name="session_status_connected">已连接</string>
+    <string name="session_status_closed">已关闭</string>
+    <string name="cd_controllers">手柄</string>
+    <string name="cd_collapse">收起</string>
+    <string name="cd_close_session">关闭会话</string>
+    <string name="cd_mute">静音</string>
+    <string name="cd_unmute">取消静音</string>
+    <string name="cd_keyboard">键盘</string>
+    <string name="cd_home">主页</string>
+    <string name="session_telemetry_title">会话性能统计</string>
+    <string name="stat_e2e_latency">端到端延迟</string>
+    <string name="stat_encode_decode">编码 / 解码</string>
+    <string name="stat_rtt_loss">RTT / 丢包</string>
+    <string name="stat_fps">帧率</string>
+    <string name="stat_bitrate">码率</string>
+    <string name="stat_gamepads">手柄</string>
+    <string name="stat_gamepads_connected">已连接 %1$d 个</string>
+    <string name="session_bitrate_target">目标码率 (Mbps)</string>
+    <string name="session_frame_pacing_label">帧同步</string>
+    <string name="action_disconnect">断开连接</string>
+    <string name="err_session_start_failed">启动会话失败。</string>
+    <string name="sessions_active_label">活动会话 (%1$d)</string>
+    <string name="session_switch_hint">会话</string>
+    <string name="session_input_mode_label">输入模式</string>
+    <string name="input_mode_touch">触屏</string>
+    <string name="input_mode_mouse">鼠标</string>
+    <string name="mouse_mode_hint">单指移动/轻点左键 · 双击按住拖拽 · 双指轻点右键/滚动</string>
+    <string name="mouse_btn_left">左键</string>
+    <string name="mouse_btn_middle">中键</string>
+    <string name="mouse_btn_right">右键</string>
+    <string name="mouse_btn_drag">拖拽</string>
+    <string name="cd_switch_input_mode">切换输入模式</string>
+    <string name="cd_expand_mouse_bar">展开鼠标按键栏</string>
+    <string name="cd_minimize_mouse_bar">收起鼠标按键栏</string>
+</resources>

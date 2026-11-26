@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Remoters</string>
+
+    <!-- Navigation & Top Bar -->
+    <string name="tab_connect">Connexion</string>
+    <string name="tab_devices">Mes appareils</string>
+    <string name="tab_nearby">À proximité</string>
+    <string name="tab_account">Compte</string>
+    <string name="tab_home">Accueil</string>
+    <string name="action_add_home">+ Accueil</string>
+    <string name="language_picker_title">Langue</string>
+    <string name="language_picker_desc">Changer de langue</string>
+    <string name="language_system_default">Langue du système</string>
+
+    <!-- Connect Screen -->
+    <string name="connect_host_section">Connexion à l\'hôte</string>
+    <string name="field_host_address">Adresse de l\'hôte</string>
+    <string name="field_host_address_placeholder">192.168.1.25:47821</string>
+    <string name="field_pairing_code">Code d\'appairage</string>
+    <string name="field_pairing_code_placeholder">XXXX-XXXX-XXXX-XXXX</string>
+    <string name="action_paste">Coller</string>
+    <string name="action_connect">Connecter</string>
+    <string name="action_view">Afficher</string>
+    <string name="err_enter_host_address">Saisissez l\'adresse de l\'hôte (par exemple 192.168.1.25:47821).</string>
+    <string name="err_enter_pairing_code">Saisissez le code d\'appairage.</string>
+    <string name="err_missing_host_or_code">Adresse de l\'hôte ou code d\'appairage manquant.</string>
+    <string name="err_device_missing_address_or_code">L\'adresse de l\'hôte ou le code d\'appairage est absent pour cet appareil.</string>
+
+    <!-- Stream Quality -->
+    <string name="quality_section_title">Qualité du flux</string>
+    <string name="quality_codec">Codec</string>
+    <string name="quality_dynamic_range">Plage dynamique</string>
+    <string name="quality_max_fps">IPS max</string>
+    <string name="quality_bitrate">Débit</string>
+    <string name="quality_frame_pacing">Cadence d\'images</string>
+    <string name="quality_display_resolution">Résolution d\'affichage</string>
+    <string name="opt_auto">Auto</string>
+    <string name="opt_sdr">SDR</string>
+    <string name="opt_hdr_10bit">HDR 10-bit</string>
+    <string name="opt_low_latency">Faible latence</string>
+    <string name="opt_balanced">Équilibré</string>
+    <string name="opt_120_hz">120 Hz</string>
+    <string name="opt_1080p">1080p</string>
+    <string name="opt_1440p">1440p</string>
+    <string name="opt_native_resolution">Native · %1$d×%2$d</string>
+    <string name="opt_native_short">Native</string>
+
+    <!-- My Devices -->
+    <string name="devices_sign_in_title">Connectez-vous pour voir vos appareils</string>
+    <string name="devices_sign_in_desc">Les hôtes partagés sur votre compte s\'affichent ici pour une connexion rapide.</string>
+    <string name="action_open_account">Ouvrir le compte</string>
+    <string name="devices_registered_count">%1$d appareil(s) enregistré(s)</string>
+    <string name="action_refresh">Actualiser</string>
+    <string name="status_refreshing">Actualisation…</string>
+    <string name="devices_empty">Aucun appareil enregistré pour l\'instant.</string>
+    <string name="status_sharing">Partage</string>
+    <string name="status_online">En ligne</string>
+    <string name="status_offline">Hors ligne</string>
+    <string name="cd_remove_device">Supprimer l\'appareil</string>
+    <string name="err_load_devices">Impossible de charger les appareils.</string>
+    <string name="err_remove_device">Échec de la suppression de l\'appareil.</string>
+
+    <!-- Nearby -->
+    <string name="nearby_header">Hôtes détectés sur le réseau local</string>
+    <string name="action_scan_lan">Scanner le LAN</string>
+    <string name="status_scanning">Recherche…</string>
+    <string name="nearby_empty">Aucun hôte trouvé sur le LAN. Vérifiez que l\'hôte partage sur le même Wi-Fi.</string>
+    <string name="action_use">Utiliser</string>
+    <string name="err_lan_scan_failed">Échec de l\'analyse LAN.</string>
+
+    <!-- Account -->
+    <string name="action_sign_out">Déconnexion</string>
+    <string name="account_create_title">Créer un compte</string>
+    <string name="account_sign_in_title">Se connecter</string>
+    <string name="account_use_existing">Compte existant</string>
+    <string name="account_create_link">Créer un compte</string>
+    <string name="field_server_url">URL du serveur de comptes</string>
+    <string name="field_username">Nom d\'utilisateur</string>
+    <string name="field_username_placeholder">alice</string>
+    <string name="field_display_name">Nom affiché</string>
+    <string name="field_display_name_placeholder">Alice</string>
+    <string name="field_password">Mot de passe</string>
+    <string name="status_working">Traitement…</string>
+    <string name="action_register">S\'inscrire</string>
+    <string name="action_sign_in">Se connecter</string>
+    <string name="err_auth_failed">Erreur d\'authentification</string>
+
+    <!-- Session & Multi-Session -->
+    <string name="session_connecting">Connexion à l\'hôte…</string>
+    <string name="session_ended_title">Session terminée</string>
+    <string name="action_close">Fermer</string>
+    <string name="session_mode_view">Affichage</string>
+    <string name="session_mode_control">Contrôle</string>
+    <string name="session_status_connecting">Connexion</string>
+    <string name="session_status_connected">Connecté</string>
+    <string name="session_status_closed">Fermé</string>
+    <string name="cd_controllers">Manettes</string>
+    <string name="cd_collapse">Réduire</string>
+    <string name="cd_close_session">Fermer la session</string>
+    <string name="cd_mute">Couper le son</string>
+    <string name="cd_unmute">Rétablir le son</string>
+    <string name="cd_keyboard">Clavier</string>
+    <string name="cd_home">Accueil</string>
+    <string name="session_telemetry_title">Télémétrie de session</string>
+    <string name="stat_e2e_latency">Latence E2E</string>
+    <string name="stat_encode_decode">Encodage / Décodage</string>
+    <string name="stat_rtt_loss">RTT / Perte</string>
+    <string name="stat_fps">IPS</string>
+    <string name="stat_bitrate">Débit</string>
+    <string name="stat_gamepads">Manettes</string>
+    <string name="stat_gamepads_connected">%1$d connectée(s)</string>
+    <string name="session_bitrate_target">Débit cible (Mbps)</string>
+    <string name="session_frame_pacing_label">Cadence d\'images</string>
+    <string name="action_disconnect">Déconnecter</string>
+    <string name="err_session_start_failed">Impossible de démarrer la session.</string>
+    <string name="sessions_active_label">Sessions actives (%1$d)</string>
+    <string name="session_switch_hint">Sessions</string>
+    <string name="session_input_mode_label">Mode d\'entrée</string>
+    <string name="input_mode_touch">Tactile</string>
+    <string name="input_mode_mouse">Souris</string>
+    <string name="mouse_mode_hint">1 doigt déplacer/taper · Double appui glisser · 2 doigts clic droit/défiler</string>
+    <string name="mouse_btn_left">Gauche</string>
+    <string name="mouse_btn_middle">Milieu</string>
+    <string name="mouse_btn_right">Droite</string>
+    <string name="mouse_btn_drag">Glisser</string>
+    <string name="cd_switch_input_mode">Changer de mode d\'entrée</string>
+    <string name="cd_expand_mouse_bar">Afficher les boutons de souris</string>
+    <string name="cd_minimize_mouse_bar">Masquer les boutons de souris</string>
+</resources>

@@ -1,12 +1,12 @@
 [workspace]
-members = ["crates/core", "crates/desktop"]
+members = ["crates/core", "crates/desktop", "crates/server", "crates/android-ffi"]
 exclude = ["vendor/gpui"]
 resolver = "2"
 
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.100"
 publish = false
 
 [workspace.dependencies]

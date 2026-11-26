@@ -9,15 +9,46 @@ use cosmic_text::{
     Attrs, AttrsList, CacheKey, Family, Font as CosmicTextFont, FontFeatures as CosmicFontFeatures,
     FontSystem, ShapeBuffer, ShapeLine, SwashCache,
 };
-
+use font_kit::{
+    canvas::{Canvas, Format as CanvasFormat, RasterizationOptions},
+    hinting::HintingOptions,
+    loaders::freetype::{Font as FreetypeFont, NativeFont as FreetypeNativeFont},
+};
 use itertools::Itertools;
 use parking_lot::RwLock;
 use pathfinder_geometry::{
     rect::{RectF, RectI},
+    transform2d::Transform2F,
     vector::{Vector2F, Vector2I},
 };
 use smallvec::SmallVec;
-use std::{borrow::Cow, sync::Arc};
+use std::{
+    borrow::Cow,
+    cell::RefCell,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+
+unsafe extern "C" {
+    fn FT_Set_Var_Design_Coordinates(
+        face: FreetypeNativeFont,
+        num_coords: libc::c_uint,
+        coords: *const libc::c_long,
+    ) -> libc::c_int;
+    fn FT_Done_Face(face: FreetypeNativeFont) -> libc::c_int;
+}
+
+static NEXT_TEXT_SYSTEM_ID: AtomicU64 = AtomicU64::new(1);
+
+thread_local! {
+    /// Per-thread FreeType faces bound to the current thread's `font_kit` `FREETYPE_LIBRARY`,
+    /// keyed by `(CosmicTextSystem instance id, FontId)` so variable-font `wght` coordinates
+    /// are never shared across threads or outlive their owning FreeType library.
+    static VARIABLE_FREETYPE_FONTS: RefCell<HashMap<(u64, FontId), FreetypeFont>> =
+        RefCell::new(HashMap::default());
+}
 
 pub(crate) struct CosmicTextSystem(RwLock<CosmicTextSystemState>);
 
@@ -33,8 +64,42 @@ impl FontKey {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct VarGlyphCacheKey {
+    font_id: FontId,
+    glyph_id: u32,
+    font_size_bits: u32,
+    subpixel_x: u8,
+    subpixel_y: u8,
+}
+
+#[derive(Clone)]
+struct VarGlyphBitmap {
+    origin_x: i32,
+    origin_y: i32,
+    width: i32,
+    height: i32,
+    data: Vec<u8>,
+}
+
+#[derive(Clone)]
+struct VariableFontInstance {
+    face_index: u32,
+    design_coords: SmallVec<[f32; 4]>,
+    norm_coords: SmallVec<[i16; 4]>,
+}
+
+struct VariableWeightAxis {
+    default_coords: SmallVec<[f32; 4]>,
+    wght_index: usize,
+    wght_min: f32,
+    wght_max: f32,
+}
+
 struct CosmicTextSystemState {
+    instance_id: u64,
     swash_cache: SwashCache,
+    var_glyph_cache: HashMap<VarGlyphCacheKey, VarGlyphBitmap>,
     font_system: FontSystem,
     scratch: ShapeBuffer,
     /// Contains all already loaded fonts, including all faces. Indexed by `FontId`.
@@ -42,25 +107,39 @@ struct CosmicTextSystemState {
     /// Caches the `FontId`s associated with a specific family to avoid iterating the font database
     /// for every font face in a family.
     font_ids_by_family_cache: HashMap<FontKey, SmallVec<[FontId; 4]>>,
+    /// Caches variable-font weight instances `(base_font_id, rounded_wght)` -> derived `FontId`.
+    variable_weight_fonts: HashMap<(FontId, u16), FontId>,
 }
 
 struct LoadedFont {
     font: Arc<CosmicTextFont>,
     features: CosmicFontFeatures,
     is_known_emoji_font: bool,
+    variable: Option<VariableFontInstance>,
+}
+
+impl LoadedFont {
+    fn norm_coords(&self) -> &[i16] {
+        self.variable
+            .as_ref()
+            .map_or(&[], |var| var.norm_coords.as_slice())
+    }
 }
 
 impl CosmicTextSystem {
     pub(crate) fn new() -> Self {
         // todo(linux) make font loading non-blocking
-        let mut font_system = FontSystem::new();
+        let font_system = FontSystem::new();
 
         Self(RwLock::new(CosmicTextSystemState {
+            instance_id: NEXT_TEXT_SYSTEM_ID.fetch_add(1, Ordering::Relaxed),
             font_system,
             swash_cache: SwashCache::new(),
+            var_glyph_cache: HashMap::default(),
             scratch: ShapeBuffer::default(),
             loaded_fonts: Vec::new(),
             font_ids_by_family_cache: HashMap::default(),
+            variable_weight_fonts: HashMap::default(),
         }))
     }
 }
@@ -116,17 +195,14 @@ impl PlatformTextSystem for CosmicTextSystem {
             font_kit::matching::find_best_match(&candidate_properties, &font_into_properties(font))
                 .context("requested font family contains no font matching the other parameters")?;
 
-        Ok(candidates[ix])
+        let base_font_id = candidates[ix];
+        Ok(state.resolve_variable_weight_font(base_font_id, font.weight))
     }
 
     fn font_metrics(&self, font_id: FontId) -> FontMetrics {
-        let metrics = self
-            .0
-            .read()
-            .loaded_font(font_id)
-            .font
-            .as_swash()
-            .metrics(&[]);
+        let lock = self.0.read();
+        let loaded = lock.loaded_font(font_id);
+        let metrics = loaded.font.as_swash().metrics(loaded.norm_coords());
 
         FontMetrics {
             units_per_em: metrics.units_per_em as u32,
@@ -147,7 +223,8 @@ impl PlatformTextSystem for CosmicTextSystem {
 
     fn typographic_bounds(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Bounds<f32>> {
         let lock = self.0.read();
-        let glyph_metrics = lock.loaded_font(font_id).font.as_swash().glyph_metrics(&[]);
+        let loaded = lock.loaded_font(font_id);
+        let glyph_metrics = loaded.font.as_swash().glyph_metrics(loaded.norm_coords());
         let glyph_id = glyph_id.0 as u16;
         // todo(linux): Compute this correctly
         // see https://github.com/servo/font-kit/blob/master/src/loaders/freetype.rs#L614-L620
@@ -206,20 +283,122 @@ impl CosmicTextSystemState {
         Ok(())
     }
 
+    fn resolve_family_name(&self, name: &str) -> String {
+        let db = self.font_system.db();
+        let has_family = |candidate: &str| {
+            db.faces()
+                .any(|face| face.families.iter().any(|family| family.0 == candidate))
+        };
+
+        match name {
+            ".SystemUIFont" | "system-ui" | "sans-serif" => {
+                let configured = db.family_name(&Family::SansSerif);
+                if has_family(configured) {
+                    return configured.to_owned();
+                }
+                for fallback in [
+                    "Ubuntu Sans",
+                    "Ubuntu",
+                    "Adwaita Sans",
+                    "Cantarell",
+                    "Noto Sans",
+                    "IBM Plex Sans",
+                    "DejaVu Sans",
+                ] {
+                    if has_family(fallback) {
+                        return fallback.to_owned();
+                    }
+                }
+                "IBM Plex Sans".to_owned()
+            }
+            "monospace" | "ui-monospace" => {
+                let configured = db.family_name(&Family::Monospace);
+                if has_family(configured) {
+                    return configured.to_owned();
+                }
+                for fallback in [
+                    "Ubuntu Sans Mono",
+                    "Ubuntu Mono",
+                    "DejaVu Sans Mono",
+                    "Noto Sans Mono",
+                    "Liberation Mono",
+                ] {
+                    if has_family(fallback) {
+                        return fallback.to_owned();
+                    }
+                }
+                "monospace".to_owned()
+            }
+            "serif" => {
+                let configured = db.family_name(&Family::Serif);
+                if has_family(configured) {
+                    return configured.to_owned();
+                }
+                "serif".to_owned()
+            }
+            _ => crate::text_system::font_name_with_fallbacks(name, "IBM Plex Sans").to_owned(),
+        }
+    }
+
+    fn resolve_variable_weight_font(&mut self, base_font_id: FontId, weight: FontWeight) -> FontId {
+        let (cosmic_font, face_index, features, is_known_emoji_font) = {
+            let base = self.loaded_font(base_font_id);
+            let Some(face_info) = self.font_system.db().face(base.font.id()) else {
+                return base_font_id;
+            };
+            (
+                base.font.clone(),
+                face_info.index,
+                base.features.clone(),
+                base.is_known_emoji_font,
+            )
+        };
+        if is_known_emoji_font {
+            return base_font_id;
+        }
+        let Some(axis) = inspect_variable_weight_axis(cosmic_font.data(), face_index) else {
+            return base_font_id;
+        };
+        let clamped_weight = weight.0.clamp(axis.wght_min, axis.wght_max);
+        let weight_key = clamped_weight.round() as u16;
+        if let Some(&cached) = self.variable_weight_fonts.get(&(base_font_id, weight_key)) {
+            return cached;
+        }
+
+        let mut design_coords = axis.default_coords;
+        design_coords[axis.wght_index] = f32::from(weight_key);
+        let norm_coords =
+            compute_normalized_coords(cosmic_font.data(), face_index, f32::from(weight_key));
+
+        let font_id = FontId(self.loaded_fonts.len());
+        self.loaded_fonts.push(LoadedFont {
+            font: cosmic_font,
+            features,
+            is_known_emoji_font,
+            variable: Some(VariableFontInstance {
+                face_index,
+                design_coords,
+                norm_coords,
+            }),
+        });
+        self.variable_weight_fonts
+            .insert((base_font_id, weight_key), font_id);
+        font_id
+    }
+
     #[profiling::function]
     fn load_family(
         &mut self,
         name: &str,
         features: &FontFeatures,
     ) -> Result<SmallVec<[FontId; 4]>> {
-        // TODO: Determine the proper system UI font.
-        let name = crate::text_system::font_name_with_fallbacks(name, "IBM Plex Sans");
+        let name = self.resolve_family_name(name);
 
         let families = self
             .font_system
             .db()
             .faces()
-            .filter(|face| face.families.iter().any(|family| *name == family.0))
+            .filter(|face| face.families.iter().any(|family| name == family.0))
             .map(|face| (face.id, face.post_script_name.clone()))
             .collect::<SmallVec<[_; 4]>>();
 
@@ -249,6 +428,7 @@ impl CosmicTextSystemState {
                 font,
                 features: features.try_into()?,
                 is_known_emoji_font: check_is_known_emoji_font(&postscript_name),
+                variable: None,
             });
         }
 
@@ -256,7 +436,8 @@ impl CosmicTextSystemState {
     }
 
     fn advance(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Size<f32>> {
-        let glyph_metrics = self.loaded_font(font_id).font.as_swash().glyph_metrics(&[]);
+        let loaded = self.loaded_font(font_id);
+        let glyph_metrics = loaded.font.as_swash().glyph_metrics(loaded.norm_coords());
         Ok(Size {
             width: glyph_metrics.advance_width(glyph_id.0 as u16),
             height: glyph_metrics.advance_height(glyph_id.0 as u16),
@@ -272,7 +453,52 @@ impl CosmicTextSystemState {
         }
     }
 
+    fn get_or_rasterize_variable_glyph(
+        &mut self,
+        params: &RenderGlyphParams,
+    ) -> Result<&VarGlyphBitmap> {
+        let px_size: f32 = (params.font_size * params.scale_factor).into();
+        let key = VarGlyphCacheKey {
+            font_id: params.font_id,
+            glyph_id: params.glyph_id.0,
+            font_size_bits: px_size.to_bits(),
+            subpixel_x: params.subpixel_variant.x,
+            subpixel_y: params.subpixel_variant.y,
+        };
+        if !self.var_glyph_cache.contains_key(&key) {
+            let loaded = &self.loaded_fonts[params.font_id.0];
+            let var = loaded
+                .variable
+                .as_ref()
+                .context("variable glyph requested for non-variable font")?;
+            let subpixel_shift = point(
+                params.subpixel_variant.x as f32 / SUBPIXEL_VARIANTS_X as f32 / params.scale_factor,
+                params.subpixel_variant.y as f32 / SUBPIXEL_VARIANTS_Y as f32 / params.scale_factor,
+            );
+            let bitmap = rasterize_variable_glyph_freetype(
+                self.instance_id,
+                params.font_id,
+                loaded.font.data(),
+                var.face_index,
+                &var.design_coords,
+                params.glyph_id.0,
+                px_size,
+                subpixel_shift.x,
+                subpixel_shift.y.trunc(),
+            )?;
+            self.var_glyph_cache.insert(key, bitmap);
+        }
+        Ok(&self.var_glyph_cache[&key])
+    }
+
     fn raster_bounds(&mut self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
+        if !params.is_emoji && self.loaded_fonts[params.font_id.0].variable.is_some() {
+            let bmp = self.get_or_rasterize_variable_glyph(params)?;
+            return Ok(Bounds {
+                origin: point(bmp.origin_x.into(), bmp.origin_y.into()),
+                size: size(bmp.width.into(), bmp.height.into()),
+            });
+        }
         let font = &self.loaded_fonts[params.font_id.0].font;
         let subpixel_shift = point(
             params.subpixel_variant.x as f32 / SUBPIXEL_VARIANTS_X as f32 / params.scale_factor,
@@ -307,6 +533,12 @@ impl CosmicTextSystemState {
     ) -> Result<(Size<DevicePixels>, Vec<u8>)> {
         if glyph_bounds.size.width.0 == 0 || glyph_bounds.size.height.0 == 0 {
             anyhow::bail!("glyph bounds are empty");
+        } else if !params.is_emoji && self.loaded_fonts[params.font_id.0].variable.is_some() {
+            let bmp = self.get_or_rasterize_variable_glyph(params)?;
+            if bmp.width <= 0 || bmp.height <= 0 {
+                anyhow::bail!("glyph bounds are empty");
+            }
+            Ok((size(bmp.width.into(), bmp.height.into()), bmp.data.clone()))
         } else {
             let bitmap_size = glyph_bounds.size;
             let font = &self.loaded_fonts[params.font_id.0].font;
@@ -365,6 +597,7 @@ impl CosmicTextSystemState {
                 font,
                 features: CosmicFontFeatures::new(),
                 is_known_emoji_font: check_is_known_emoji_font(&face.post_script_name),
+                variable: None,
             });
 
             font_id
@@ -412,6 +645,7 @@ impl CosmicTextSystemState {
         let layout = layout_lines.first().unwrap();
 
         let mut runs: Vec<ShapedRun> = Vec::new();
+        let mut variable_advance_delta = 0.0f32;
         for glyph in &layout.glyphs {
             let mut font_id = FontId(glyph.metadata);
             let mut loaded_font = self.loaded_font(font_id);
@@ -428,10 +662,23 @@ impl CosmicTextSystemState {
 
             let shaped_glyph = ShapedGlyph {
                 id: GlyphId(glyph.glyph_id as u32),
-                position: point(glyph.x.into(), glyph.y.into()),
+                position: point((glyph.x + variable_advance_delta).into(), glyph.y.into()),
                 index: glyph.start,
                 is_emoji,
             };
+
+            let norm_coords = loaded_font.norm_coords();
+            if !norm_coords.is_empty() {
+                let swash_font = loaded_font.font.as_swash();
+                let upem = f32::from(swash_font.metrics(&[]).units_per_em);
+                if upem > 0.0 {
+                    let default_adv = swash_font.glyph_metrics(&[]).advance_width(glyph.glyph_id);
+                    let varied_adv = swash_font
+                        .glyph_metrics(norm_coords)
+                        .advance_width(glyph.glyph_id);
+                    variable_advance_delta += (varied_adv - default_adv) * (font_size.0 / upem);
+                }
+            }
 
             if let Some(last_run) = runs
                 .last_mut()
@@ -448,7 +695,7 @@ impl CosmicTextSystemState {
 
         LineLayout {
             font_size,
-            width: layout.w.into(),
+            width: (layout.w + variable_advance_delta).max(0.0).into(),
             ascent: layout.max_ascent.into(),
             descent: layout.max_descent.into(),
             runs,
@@ -575,7 +822,256 @@ fn face_info_into_properties(
     }
 }
 
+fn inspect_variable_weight_axis(data: &[u8], face_index: u32) -> Option<VariableWeightAxis> {
+    let face = cosmic_text::ttf_parser::Face::parse(data, face_index).ok()?;
+    if !face.is_variable() {
+        return None;
+    }
+    let mut default_coords = SmallVec::new();
+    let mut wght_info = None;
+    let wght_tag = cosmic_text::ttf_parser::Tag::from_bytes(b"wght");
+    for (idx, axis) in face.variation_axes().into_iter().enumerate() {
+        default_coords.push(axis.def_value);
+        if axis.tag == wght_tag {
+            wght_info = Some((idx, axis.min_value, axis.max_value));
+        }
+    }
+    let (wght_index, wght_min, wght_max) = wght_info?;
+    if (wght_max - wght_min).abs() < f32::EPSILON {
+        return None;
+    }
+    Some(VariableWeightAxis {
+        default_coords,
+        wght_index,
+        wght_min,
+        wght_max,
+    })
+}
+
+fn compute_normalized_coords(data: &[u8], face_index: u32, weight: f32) -> SmallVec<[i16; 4]> {
+    let std::result::Result::Ok(mut face) = cosmic_text::ttf_parser::Face::parse(data, face_index)
+    else {
+        return SmallVec::new();
+    };
+    let _ = face.set_variation(cosmic_text::ttf_parser::Tag::from_bytes(b"wght"), weight);
+    face.variation_coordinates()
+        .iter()
+        .map(|coord| coord.get())
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rasterize_variable_glyph_freetype(
+    instance_id: u64,
+    font_id: FontId,
+    font_data: &[u8],
+    face_index: u32,
+    design_coords: &[f32],
+    glyph_id: u32,
+    px_size: f32,
+    subpixel_x: f32,
+    subpixel_y: f32,
+) -> Result<VarGlyphBitmap> {
+    VARIABLE_FREETYPE_FONTS.with(|cell| {
+        let mut cache = cell.borrow_mut();
+        let ft_font = match cache.entry((instance_id, font_id)) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let ft_font = FreetypeFont::from_bytes(Arc::new(font_data.to_vec()), face_index)
+                    .map_err(|err| {
+                        anyhow::anyhow!("failed to open FreeType variable font: {err:?}")
+                    })?;
+                let fixed_coords: SmallVec<[libc::c_long; 4]> = design_coords
+                    .iter()
+                    .map(|&v| (v * 65536.0).round() as libc::c_long)
+                    .collect();
+                let native = ft_font.native_font();
+                let err = unsafe {
+                    let res = FT_Set_Var_Design_Coordinates(
+                        native,
+                        fixed_coords.len() as libc::c_uint,
+                        fixed_coords.as_ptr(),
+                    );
+                    FT_Done_Face(native);
+                    res
+                };
+                if err != 0 {
+                    anyhow::bail!("FT_Set_Var_Design_Coordinates failed with error {err}");
+                }
+                entry.insert(ft_font)
+            }
+        };
+
+        let subpixel_transform =
+            Transform2F::from_translation(Vector2F::new(subpixel_x, subpixel_y));
+        let est_bounds = ft_font
+            .raster_bounds(
+                glyph_id,
+                px_size,
+                subpixel_transform,
+                HintingOptions::Vertical(px_size),
+                RasterizationOptions::GrayscaleAa,
+            )
+            .map_err(|err| anyhow::anyhow!("FreeType raster_bounds failed: {err:?}"))?;
+
+        if est_bounds.width() <= 0 || est_bounds.height() <= 0 {
+            return Ok(VarGlyphBitmap {
+                origin_x: 0,
+                origin_y: 0,
+                width: 0,
+                height: 0,
+                data: Vec::new(),
+            });
+        }
+
+        let pad = 2;
+        let padded_origin = Vector2I::new(est_bounds.origin_x() - pad, est_bounds.origin_y() - pad);
+        let padded_size =
+            Vector2I::new(est_bounds.width() + pad * 2, est_bounds.height() + pad * 2);
+        let mut canvas = Canvas::new(padded_size, CanvasFormat::A8);
+        let draw_transform = Transform2F::from_translation(Vector2F::new(
+            subpixel_x - padded_origin.x() as f32,
+            subpixel_y - padded_origin.y() as f32,
+        ));
+        ft_font
+            .rasterize_glyph(
+                &mut canvas,
+                glyph_id,
+                px_size,
+                draw_transform,
+                HintingOptions::Vertical(px_size),
+                RasterizationOptions::GrayscaleAa,
+            )
+            .map_err(|err| anyhow::anyhow!("FreeType rasterize_glyph failed: {err:?}"))?;
+
+        let canvas_w = canvas.size.x() as usize;
+        let canvas_h = canvas.size.y() as usize;
+        let mut min_x = canvas_w;
+        let mut min_y = canvas_h;
+        let mut max_x = 0usize;
+        let mut max_y = 0usize;
+        for y in 0..canvas_h {
+            let row = &canvas.pixels[y * canvas.stride..y * canvas.stride + canvas_w];
+            for (x, &alpha) in row.iter().enumerate() {
+                if alpha != 0 {
+                    min_x = min_x.min(x);
+                    min_y = min_y.min(y);
+                    max_x = max_x.max(x);
+                    max_y = max_y.max(y);
+                }
+            }
+        }
+
+        if min_x > max_x || min_y > max_y {
+            return Ok(VarGlyphBitmap {
+                origin_x: 0,
+                origin_y: 0,
+                width: 0,
+                height: 0,
+                data: Vec::new(),
+            });
+        }
+
+        let tight_w = max_x - min_x + 1;
+        let tight_h = max_y - min_y + 1;
+        let mut data = Vec::with_capacity(tight_w * tight_h);
+        for y in min_y..=max_y {
+            let row = &canvas.pixels[y * canvas.stride + min_x..y * canvas.stride + max_x + 1];
+            data.extend_from_slice(row);
+        }
+
+        Ok(VarGlyphBitmap {
+            origin_x: padded_origin.x() + min_x as i32,
+            origin_y: padded_origin.y() + min_y as i32,
+            width: tight_w as i32,
+            height: tight_h as i32,
+            data,
+        })
+    })
+}
+
 fn check_is_known_emoji_font(postscript_name: &str) -> bool {
     // TODO: Include other common emoji fonts
     postscript_name == "NotoColorEmoji"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_system_ui_and_monospace_fonts_with_variable_weight_rasterization() {
+        let text_system = CosmicTextSystem::new();
+        let make_font = |family: &str, weight: FontWeight| Font {
+            family: family.to_owned().into(),
+            features: FontFeatures::default(),
+            fallbacks: None,
+            weight,
+            style: FontStyle::Normal,
+        };
+
+        let mono_id = text_system
+            .font_id(&make_font("monospace", FontWeight::NORMAL))
+            .expect("monospace should resolve on Linux");
+        assert!(text_system.glyph_for_char(mono_id, '0').is_some());
+
+        let thin_id = text_system
+            .font_id(&make_font(".SystemUIFont", FontWeight::THIN))
+            .expect(".SystemUIFont thin should resolve");
+        let regular_id = text_system
+            .font_id(&make_font(".SystemUIFont", FontWeight::NORMAL))
+            .expect(".SystemUIFont normal should resolve");
+        let semibold_id = text_system
+            .font_id(&make_font(".SystemUIFont", FontWeight::SEMIBOLD))
+            .expect(".SystemUIFont semibold should resolve");
+        let bold_id = text_system
+            .font_id(&make_font(".SystemUIFont", FontWeight::BOLD))
+            .expect(".SystemUIFont bold should resolve");
+
+        assert_ne!(regular_id, bold_id);
+
+        let raster_ink = |font_id: FontId| -> u64 {
+            let glyph_id = text_system.glyph_for_char(font_id, 'H').unwrap();
+            let params = RenderGlyphParams {
+                font_id,
+                glyph_id,
+                font_size: crate::px(24.0),
+                subpixel_variant: Point { x: 0, y: 0 },
+                scale_factor: 1.0,
+                is_emoji: false,
+            };
+            let bounds = text_system.glyph_raster_bounds(&params).unwrap();
+            let (sz, bytes) = text_system.rasterize_glyph(&params, bounds).unwrap();
+            assert_eq!(sz, bounds.size);
+            assert_eq!(bytes.len(), (sz.width.0 * sz.height.0) as usize);
+            bytes.into_iter().map(u64::from).sum()
+        };
+
+        let regular_ink = raster_ink(regular_id);
+        let bold_ink = raster_ink(bold_id);
+        assert!(
+            bold_ink > regular_ink,
+            "expected bold ink ({bold_ink}) > regular ink ({regular_ink})"
+        );
+
+        // When backed by a variable font (e.g. Ubuntu Sans on Ubuntu 26.04), intermediate weights
+        // must also render with distinct stroke weights.
+        if text_system
+            .0
+            .read()
+            .loaded_font(regular_id)
+            .variable
+            .is_some()
+        {
+            let thin_ink = raster_ink(thin_id);
+            let semibold_ink = raster_ink(semibold_id);
+            assert_ne!(thin_id, regular_id);
+            assert_ne!(regular_id, semibold_id);
+            assert_ne!(semibold_id, bold_id);
+            assert!(
+                thin_ink < regular_ink && regular_ink < semibold_ink && semibold_ink < bold_ink,
+                "expected monotonic variable weights: thin={thin_ink} < regular={regular_ink} < semibold={semibold_ink} < bold={bold_ink}"
+            );
+        }
+    }
 }

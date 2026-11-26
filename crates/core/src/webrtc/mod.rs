@@ -25,7 +25,7 @@ use tokio::{
 
 use crate::{
     Input as DesktopInput,
-    network::is_local_peer,
+    network::is_allowed_peer,
     protocol,
     video::{AccessUnit, Codec, Format, ReceivedFrame},
 };
@@ -170,7 +170,7 @@ async fn run(
         let deadline = loop {
             match rtc.poll_output()? {
                 Output::Transmit(tx) => {
-                    if is_local_peer(tx.destination) {
+                    if is_allowed_peer(tx.destination) {
                         socket.send_to(tx.contents.as_ref(), tx.destination).await?;
                     }
                 }
@@ -255,7 +255,7 @@ async fn run(
         tokio::select! {
             result = socket.recv_from(&mut packet) => {
                 let (len, remote) = result?;
-                if is_local_peer(remote)
+                if is_allowed_peer(remote)
                     && let Ok(receive) = Receive::new(Protocol::Udp, remote, local, &packet[..len])
                 {
                     rtc.handle_input(Input::Receive(Instant::now(), receive))?;
@@ -333,6 +333,7 @@ fn write_frame(rtc: &mut Rtc, role: &Role, unit: AccessUnit) -> Result<()> {
     let codec = match format.codec {
         Codec::H264 => RtcCodec::H264,
         Codec::Hevc => RtcCodec::H265,
+        Codec::Av1 => bail!("WebRTC transport supports H.264 and HEVC only."),
     };
     let pt = writer
         .payload_params()

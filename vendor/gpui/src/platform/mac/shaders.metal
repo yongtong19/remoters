@@ -6,6 +6,8 @@ using namespace metal;
 float4 hsla_to_rgba(Hsla hsla);
 float3 srgb_to_linear(float3 color);
 float3 linear_to_srgb(float3 color);
+float linear_to_extended_srgb_channel(float x);
+float3 linear_to_extended_srgb(float3 color);
 float4 srgb_to_oklab(float4 color);
 float4 oklab_to_srgb(float4 color);
 float4 to_device_position(float2 unit_vertex, Bounds_ScaledPixels bounds,
@@ -872,18 +874,86 @@ fragment float4 surface_fragment(SurfaceFragmentInput input [[stage_in]],
                                  texture2d<float> y_texture
                                  [[texture(SurfaceInputIndex_YTexture)]],
                                  texture2d<float> cb_cr_texture
-                                 [[texture(SurfaceInputIndex_CbCrTexture)]]) {
+                                 [[texture(SurfaceInputIndex_CbCrTexture)]],
+                                 constant uint &is_full_range
+                                 [[buffer(SurfaceInputIndex_IsFullRange)]]) {
   constexpr sampler texture_sampler(mag_filter::linear, min_filter::linear);
-  const float4x4 ycbcrToRGBTransform =
-      float4x4(float4(+1.0000f, +1.0000f, +1.0000f, +0.0000f),
-               float4(+0.0000f, -0.3441f, +1.7720f, +0.0000f),
-               float4(+1.4020f, -0.7141f, +0.0000f, +0.0000f),
-               float4(-0.7010f, +0.5291f, -0.8860f, +1.0000f));
-  float4 ycbcr = float4(
-      y_texture.sample(texture_sampler, input.texture_position).r,
-      cb_cr_texture.sample(texture_sampler, input.texture_position).rg, 1.0);
+  float y = y_texture.sample(texture_sampler, input.texture_position).r;
+  float2 cbcr = cb_cr_texture.sample(texture_sampler, input.texture_position).rg;
 
-  return ycbcrToRGBTransform * ycbcr;
+  float3 rgb;
+  if (is_full_range != 0u) {
+    const float4x4 ycbcrToRGBTransform =
+        float4x4(float4(+1.0000f, +1.0000f, +1.0000f, +0.0000f),
+                 float4(+0.0000f, -0.3441f, +1.7720f, +0.0000f),
+                 float4(+1.4020f, -0.7141f, +0.0000f, +0.0000f),
+                 float4(-0.7010f, +0.5291f, -0.8860f, +1.0000f));
+    rgb = (ycbcrToRGBTransform * float4(y, cbcr, 1.0f)).rgb;
+  } else {
+    // 8-bit video range (420v) BT.709
+    float y_norm = (y - 16.0f / 255.0f) * (255.0f / 219.0f);
+    float2 cbcr_norm = (cbcr - 128.0f / 255.0f) * (255.0f / 224.0f);
+    rgb = float3(
+        y_norm + 1.5748f * cbcr_norm.y,
+        y_norm - 0.187324f * cbcr_norm.x - 0.468124f * cbcr_norm.y,
+        y_norm + 1.8556f * cbcr_norm.x);
+  }
+
+  return float4(clamp(rgb, 0.0f, 1.0f), 1.0f);
+}
+
+fragment float4 surface_hdr_fragment(SurfaceFragmentInput input [[stage_in]],
+                                     texture2d<float> y_texture
+                                     [[texture(SurfaceInputIndex_YTexture)]],
+                                     texture2d<float> cb_cr_texture
+                                     [[texture(SurfaceInputIndex_CbCrTexture)]],
+                                     constant uint &is_full_range
+                                     [[buffer(SurfaceInputIndex_IsFullRange)]]) {
+  constexpr sampler texture_sampler(mag_filter::linear, min_filter::linear);
+  float y_sample = y_texture.sample(texture_sampler, input.texture_position).r;
+  float2 cbcr_sample =
+      cb_cr_texture.sample(texture_sampler, input.texture_position).rg;
+
+  float y;
+  float2 cbcr;
+  if (is_full_range != 0u) {
+    y = y_sample;
+    cbcr = cbcr_sample - 0.5f;
+  } else {
+    // P010 limited/video range: 10-bit 64..940 for Y, 64..960 centered at 512 for CbCr.
+    y = (y_sample - 64.0f / 1023.0f) / (876.0f / 1023.0f);
+    cbcr = (cbcr_sample - 512.0f / 1023.0f) / (896.0f / 1023.0f);
+  }
+
+  // BT.2020 NCL YCbCr -> BT.2020 PQ RGB (Kr = 0.2627, Kb = 0.0593)
+  float3 rgb_pq = clamp(
+      float3(
+          y + 1.4746f * cbcr.y,
+          y - 0.16455f * cbcr.x - 0.57135f * cbcr.y,
+          y + 1.8814f * cbcr.x),
+      0.0f,
+      1.0f);
+
+  // ST.2084 PQ EOTF -> linear nits (0..10000), normalized to 203-nit HDR reference white.
+  const float m1 = 2610.0f / 16384.0f;
+  const float m2 = (2523.0f / 4096.0f) * 128.0f;
+  const float c1 = 3424.0f / 4096.0f;
+  const float c2 = (2413.0f / 4096.0f) * 32.0f;
+  const float c3 = (2392.0f / 4096.0f) * 32.0f;
+
+  float3 n = pow(max(rgb_pq, 0.0f), float3(1.0f / m2));
+  float3 num = max(n - c1, 0.0f);
+  float3 den = max(c2 - c3 * n, 1e-6f);
+  float3 rgb_linear_2020 = pow(num / den, float3(1.0f / m1)) * (10000.0f / 203.0f);
+
+  // Linear BT.2020 -> Linear sRGB (D65)
+  float3 rgb_linear_srgb = float3(
+      +1.6604910f * rgb_linear_2020.r - 0.5876411f * rgb_linear_2020.g - 0.0728499f * rgb_linear_2020.b,
+      -0.1245505f * rgb_linear_2020.r + 1.1328999f * rgb_linear_2020.g - 0.0083494f * rgb_linear_2020.b,
+      -0.0181508f * rgb_linear_2020.r - 0.1005789f * rgb_linear_2020.g + 1.1187297f * rgb_linear_2020.b);
+
+  float3 rgb_ext_srgb = linear_to_extended_srgb(rgb_linear_srgb);
+  return float4(rgb_ext_srgb, 1.0f);
 }
 
 float4 hsla_to_rgba(Hsla hsla) {
@@ -940,6 +1010,21 @@ float3 srgb_to_linear(float3 color) {
 
 float3 linear_to_srgb(float3 color) {
   return pow(color, float3(1.0 / 2.2));
+}
+
+float linear_to_extended_srgb_channel(float x) {
+  float abs_x = fabs(x);
+  float encoded = abs_x <= 0.0031308f
+      ? (12.92f * abs_x)
+      : (1.055f * pow(abs_x, 1.0f / 2.4f) - 0.055f);
+  return x < 0.0f ? -encoded : encoded;
+}
+
+float3 linear_to_extended_srgb(float3 color) {
+  return float3(
+      linear_to_extended_srgb_channel(color.r),
+      linear_to_extended_srgb_channel(color.g),
+      linear_to_extended_srgb_channel(color.b));
 }
 
 // Converts a sRGB color to the Oklab color space.

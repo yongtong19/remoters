@@ -46,7 +46,15 @@ windows = { version = "0.61", features = [
     "Win32_System_WinRT",
     "Win32_System_WinRT_Direct3D11",
     "Win32_System_WinRT_Graphics_Capture",
+    "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.12", default-features = false, features = ["async-std"] }
+enigo = { version = "0.6", default-features = false, features = ["x11rb"] }
+futures-util = { version = "0.3", default-features = false }
+image = { version = "0.25", default-features = false }
+smallvec = "1"
 
 [build-dependencies]
 cc = "1"

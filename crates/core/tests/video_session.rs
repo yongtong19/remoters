@@ -6,7 +6,7 @@ use bytes::Bytes;
 use remoters_core::{
     network::Pairing,
     session::webrtc::{SessionHost, ViewerSession},
-    video::{AccessUnit, AnnexBReader, Codec, Format, access_units},
+    video::{AccessUnit, AnnexBReader, Codec, Format, access_units, obu},
 };
 
 const FORMAT: Format = Format {
@@ -14,6 +14,7 @@ const FORMAT: Format = Format {
     width: 3840,
     height: 2160,
     frames_per_second: 120,
+    hdr: false,
 };
 
 // NAL headers used to exercise framing, without invoking a codec.
@@ -230,4 +231,36 @@ fn web_rtc_control_is_ordered_and_respects_view_only() -> Result<()> {
             }
             Ok(())
         })
+}
+
+#[test]
+fn av1_access_unit_dispatches_to_obu_inspector_and_extracts_av1c() -> Result<()> {
+    // 10-bit Main profile (profile=0, level=13, tier=1, high_bitdepth=1, 4:2:0, csp=2)
+    let seq_payload: &[u8] = &[
+        0x00, 0x00, 0x00, 0x6e, 0xef, 0xbf, 0xe1, 0xbd, 0x02, 0x79, 0xd0, 0x91, 0x00, 0x94,
+    ];
+    let mut seq_obu = vec![0x0a, seq_payload.len() as u8];
+    seq_obu.extend_from_slice(seq_payload);
+
+    let mut key_au = vec![0x12, 0x00]; // OBU_TEMPORAL_DELIMITER
+    key_au.extend_from_slice(&seq_obu);
+    key_au.extend_from_slice(&[0x32, 0x02, 0x00, 0x42]); // OBU_FRAME KEY_FRAME
+
+    let key = AccessUnit::from_annex_b(Codec::Av1, 0, key_au.clone().into())?;
+    assert!(key.is_random_access());
+
+    let delta = AccessUnit::from_annex_b(
+        Codec::Av1,
+        1,
+        Bytes::from_static(&[0x12, 0x00, 0x32, 0x02, 0x20, 0x42]),
+    )?;
+    assert!(!delta.is_random_access());
+
+    let extracted = obu::extract_sequence_header(&key_au).expect("sequence header present");
+    assert_eq!(extracted, seq_obu.as_slice());
+
+    let av1c = obu::build_av1c(extracted)?;
+    assert_eq!(&av1c[..4], &[0x81, 13, 0b1_1_0_0_1_1_10, 0x00]);
+    assert_eq!(&av1c[4..], extracted);
+    Ok(())
 }

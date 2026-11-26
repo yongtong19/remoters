@@ -1,5 +1,6 @@
 //! Compressed video formats and Annex B access units.
 mod annex_b;
+pub mod obu;
 
 use std::sync::Arc;
 
@@ -19,6 +20,7 @@ pub const MAX_ACCESS_UNIT: usize = 4 * 1024 * 1024;
 pub enum Codec {
     H264 = 1,
     Hevc = 2,
+    Av1 = 3,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -27,6 +29,7 @@ pub struct Format {
     pub width: u16,
     pub height: u16,
     pub frames_per_second: u16,
+    pub hdr: bool,
 }
 
 impl Format {
@@ -55,6 +58,7 @@ pub struct AccessUnit {
     bytes: Bytes,
     random_access: bool,
     rtp_timestamp: Option<u64>,
+    host_latency_us: u32,
 }
 
 impl AccessUnit {
@@ -69,6 +73,7 @@ impl AccessUnit {
             bytes,
             random_access,
             rtp_timestamp: None,
+            host_latency_us: 0,
         })
     }
 
@@ -86,6 +91,16 @@ impl AccessUnit {
         self.rtp_timestamp
     }
 
+    /// Marks an access unit with host-side capture/encode processing time in microseconds.
+    pub fn with_host_latency_us(mut self, host_latency_us: u32) -> Self {
+        self.host_latency_us = host_latency_us;
+        self
+    }
+
+    pub fn host_latency_us(&self) -> u32 {
+        self.host_latency_us
+    }
+
     pub fn is_random_access(&self) -> bool {
         self.random_access
     }
@@ -96,5 +111,6 @@ impl AccessUnit {
 pub struct ReceivedFrame {
     pub codec: Codec,
     pub rtp_timestamp: u64,
+    pub host_latency_us: u32,
     pub bytes: Arc<[u8]>,
 }

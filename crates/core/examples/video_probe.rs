@@ -24,6 +24,7 @@ const FORMAT: Format = Format {
     width: 3840,
     height: 2160,
     frames_per_second: FPS,
+    hdr: false,
 };
 
 fn main() -> Result<()> {

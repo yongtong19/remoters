@@ -34,10 +34,14 @@ fn nal_type(codec: Codec, header: u8) -> u8 {
     match codec {
         Codec::H264 => header & 0x1f,
         Codec::Hevc => (header >> 1) & 0x3f,
+        Codec::Av1 => 0,
     }
 }
 
 pub(crate) fn inspect(codec: Codec, bytes: &[u8]) -> Result<bool> {
+    if codec == Codec::Av1 {
+        return super::obu::inspect_av1(bytes);
+    }
     let mut starts = start_codes(bytes).peekable();
     let mut picture = false;
     let mut idr = false;
@@ -165,5 +169,6 @@ fn delimiter_type(codec: Codec) -> u8 {
     match codec {
         Codec::H264 => 9,
         Codec::Hevc => 35,
+        Codec::Av1 => 0,
     }
 }

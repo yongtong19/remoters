@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Remoters</string>
+
+    <!-- Navigation & Top Bar -->
+    <string name="tab_connect">Connect</string>
+    <string name="tab_devices">My Devices</string>
+    <string name="tab_nearby">Nearby</string>
+    <string name="tab_account">Account</string>
+    <string name="tab_home">Home</string>
+    <string name="action_add_home">+ Home</string>
+    <string name="language_picker_title">Language</string>
+    <string name="language_picker_desc">Switch language</string>
+    <string name="language_system_default">System default</string>
+
+    <!-- Connect Screen -->
+    <string name="connect_host_section">Host Connection</string>
+    <string name="field_host_address">Host address</string>
+    <string name="field_host_address_placeholder">192.168.1.25:47821</string>
+    <string name="field_pairing_code">Pairing code</string>
+    <string name="field_pairing_code_placeholder">XXXX-XXXX-XXXX-XXXX</string>
+    <string name="action_paste">Paste</string>
+    <string name="action_connect">Connect</string>
+    <string name="action_view">View</string>
+    <string name="err_enter_host_address">Enter host address (for example 192.168.1.25:47821).</string>
+    <string name="err_enter_pairing_code">Enter pairing code.</string>
+    <string name="err_missing_host_or_code">Missing host address or pairing code.</string>
+    <string name="err_device_missing_address_or_code">Device is missing host address or pairing code.</string>
+
+    <!-- Stream Quality -->
+    <string name="quality_section_title">Stream Quality</string>
+    <string name="quality_codec">Codec</string>
+    <string name="quality_dynamic_range">Dynamic Range</string>
+    <string name="quality_max_fps">Max FPS</string>
+    <string name="quality_bitrate">Bitrate</string>
+    <string name="quality_frame_pacing">Frame Pacing</string>
+    <string name="quality_display_resolution">Display resolution</string>
+    <string name="opt_auto">Auto</string>
+    <string name="opt_sdr">SDR</string>
+    <string name="opt_hdr_10bit">HDR 10-bit</string>
+    <string name="opt_low_latency">Low latency</string>
+    <string name="opt_balanced">Balanced</string>
+    <string name="opt_120_hz">120 Hz</string>
+    <string name="opt_1080p">1080p</string>
+    <string name="opt_1440p">1440p</string>
+    <string name="opt_native_resolution">Native · %1$d×%2$d</string>
+    <string name="opt_native_short">Native</string>
+
+    <!-- My Devices -->
+    <string name="devices_sign_in_title">Sign in to view your devices</string>
+    <string name="devices_sign_in_desc">Signed-in hosts sharing on your account appear here for one-tap connection.</string>
+    <string name="action_open_account">Open Account</string>
+    <string name="devices_registered_count">%1$d registered device(s)</string>
+    <string name="action_refresh">Refresh</string>
+    <string name="status_refreshing">Refreshing…</string>
+    <string name="devices_empty">No devices registered yet.</string>
+    <string name="status_sharing">Sharing</string>
+    <string name="status_online">Online</string>
+    <string name="status_offline">Offline</string>
+    <string name="cd_remove_device">Remove device</string>
+    <string name="err_load_devices">Could not load devices.</string>
+    <string name="err_remove_device">Failed to remove device.</string>
+
+    <!-- Nearby -->
+    <string name="nearby_header">Hosts discovered on LAN</string>
+    <string name="action_scan_lan">Scan LAN</string>
+    <string name="status_scanning">Scanning…</string>
+    <string name="nearby_empty">No LAN hosts found yet. Make sure the host is sharing on the same Wi-Fi.</string>
+    <string name="action_use">Use</string>
+    <string name="err_lan_scan_failed">LAN scan failed.</string>
+
+    <!-- Account -->
+    <string name="action_sign_out">Sign out</string>
+    <string name="account_create_title">Create Account</string>
+    <string name="account_sign_in_title">Sign In</string>
+    <string name="account_use_existing">Use existing</string>
+    <string name="account_create_link">Create account</string>
+    <string name="field_server_url">Account server URL</string>
+    <string name="field_username">Username</string>
+    <string name="field_username_placeholder">alice</string>
+    <string name="field_display_name">Display name</string>
+    <string name="field_display_name_placeholder">Alice</string>
+    <string name="field_password">Password</string>
+    <string name="status_working">Working…</string>
+    <string name="action_register">Register</string>
+    <string name="action_sign_in">Sign in</string>
+    <string name="err_auth_failed">Authentication error</string>
+
+    <!-- Session & Multi-Session -->
+    <string name="session_connecting">Connecting to host…</string>
+    <string name="session_ended_title">Session Ended</string>
+    <string name="action_close">Close</string>
+    <string name="session_mode_view">View</string>
+    <string name="session_mode_control">Control</string>
+    <string name="session_status_connecting">Connecting</string>
+    <string name="session_status_connected">Connected</string>
+    <string name="session_status_closed">Closed</string>
+    <string name="cd_controllers">Controllers</string>
+    <string name="cd_collapse">Collapse</string>
+    <string name="cd_close_session">Close session</string>
+    <string name="cd_mute">Mute</string>
+    <string name="cd_unmute">Unmute</string>
+    <string name="cd_keyboard">Keyboard</string>
+    <string name="cd_home">Home</string>
+    <string name="session_telemetry_title">Session Telemetry</string>
+    <string name="stat_e2e_latency">E2E latency</string>
+    <string name="stat_encode_decode">Encode / Decode</string>
+    <string name="stat_rtt_loss">RTT / Loss</string>
+    <string name="stat_fps">FPS</string>
+    <string name="stat_bitrate">Bitrate</string>
+    <string name="stat_gamepads">Gamepads</string>
+    <string name="stat_gamepads_connected">%1$d connected</string>
+    <string name="session_bitrate_target">Bitrate target (Mbps)</string>
+    <string name="session_frame_pacing_label">Frame pacing</string>
+    <string name="action_disconnect">Disconnect</string>
+    <string name="err_session_start_failed">Failed to start session.</string>
+    <string name="sessions_active_label">Active sessions (%1$d)</string>
+    <string name="session_switch_hint">Sessions</string>
+    <string name="session_input_mode_label">Input mode</string>
+    <string name="input_mode_touch">Touch</string>
+    <string name="input_mode_mouse">Mouse</string>
+    <string name="mouse_mode_hint">1-finger move &amp; tap · Double-tap drag · 2-finger right-click &amp; scroll</string>
+    <string name="mouse_btn_left">Left</string>
+    <string name="mouse_btn_middle">Mid</string>
+    <string name="mouse_btn_right">Right</string>
+    <string name="mouse_btn_drag">Drag</string>
+    <string name="cd_switch_input_mode">Switch input mode</string>
+    <string name="cd_expand_mouse_bar">Show mouse buttons</string>
+    <string name="cd_minimize_mouse_bar">Hide mouse buttons</string>
+</resources>

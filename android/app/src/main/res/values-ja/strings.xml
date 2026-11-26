@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Remoters</string>
+
+    <!-- Navigation & Top Bar -->
+    <string name="tab_connect">接続</string>
+    <string name="tab_devices">マイデバイス</string>
+    <string name="tab_nearby">近く</string>
+    <string name="tab_account">アカウント</string>
+    <string name="tab_home">ホーム</string>
+    <string name="action_add_home">+ ホーム</string>
+    <string name="language_picker_title">言語</string>
+    <string name="language_picker_desc">言語を切り替え</string>
+    <string name="language_system_default">システム設定</string>
+
+    <!-- Connect Screen -->
+    <string name="connect_host_section">ホスト接続</string>
+    <string name="field_host_address">ホストアドレス</string>
+    <string name="field_host_address_placeholder">192.168.1.25:47821</string>
+    <string name="field_pairing_code">ペアリングコード</string>
+    <string name="field_pairing_code_placeholder">XXXX-XXXX-XXXX-XXXX</string>
+    <string name="action_paste">貼り付け</string>
+    <string name="action_connect">接続</string>
+    <string name="action_view">閲覧</string>
+    <string name="err_enter_host_address">ホストアドレスを入力してください（例: 192.168.1.25:47821）。</string>
+    <string name="err_enter_pairing_code">ペアリングコードを入力してください。</string>
+    <string name="err_missing_host_or_code">ホストアドレスまたはペアリングコードがありません。</string>
+    <string name="err_device_missing_address_or_code">このデバイスにはホストアドレスまたはペアリングコードがありません。</string>
+
+    <!-- Stream Quality -->
+    <string name="quality_section_title">ストリーム品質</string>
+    <string name="quality_codec">コーデック</string>
+    <string name="quality_dynamic_range">ダイナミックレンジ</string>
+    <string name="quality_max_fps">最大 FPS</string>
+    <string name="quality_bitrate">ビットレート</string>
+    <string name="quality_frame_pacing">フレームペーシング</string>
+    <string name="quality_display_resolution">画面解像度</string>
+    <string name="opt_auto">自動</string>
+    <string name="opt_sdr">SDR</string>
+    <string name="opt_hdr_10bit">HDR 10-bit</string>
+    <string name="opt_low_latency">低遅延</string>
+    <string name="opt_balanced">バランス</string>
+    <string name="opt_120_hz">120 Hz</string>
+    <string name="opt_1080p">1080p</string>
+    <string name="opt_1440p">1440p</string>
+    <string name="opt_native_resolution">ネイティブ · %1$d×%2$d</string>
+    <string name="opt_native_short">ネイティブ</string>
+
+    <!-- My Devices -->
+    <string name="devices_sign_in_title">サインインしてデバイスを表示</string>
+    <string name="devices_sign_in_desc">同じアカウントで共有中のホストがここに表示され、ワンタップで接続できます。</string>
+    <string name="action_open_account">アカウントを開く</string>
+    <string name="devices_registered_count">登録済みデバイス: %1$d 台</string>
+    <string name="action_refresh">更新</string>
+    <string name="status_refreshing">更新中…</string>
+    <string name="devices_empty">登録されているデバイスはありません。</string>
+    <string name="status_sharing">共有中</string>
+    <string name="status_online">オンライン</string>
+    <string name="status_offline">オフライン</string>
+    <string name="cd_remove_device">デバイスを削除</string>
+    <string name="err_load_devices">デバイスを読み込めませんでした。</string>
+    <string name="err_remove_device">デバイスの削除に失敗しました。</string>
+
+    <!-- Nearby -->
+    <string name="nearby_header">LAN 上で検出されたホスト</string>
+    <string name="action_scan_lan">LAN をスキャン</string>
+    <string name="status_scanning">スキャン中…</string>
+    <string name="nearby_empty">LAN ホストが見つかりません。同じ Wi-Fi 上でホストが共有中か確認してください。</string>
+    <string name="action_use">使用</string>
+    <string name="err_lan_scan_failed">LAN スキャンに失敗しました。</string>
+
+    <!-- Account -->
+    <string name="action_sign_out">サインアウト</string>
+    <string name="account_create_title">アカウント作成</string>
+    <string name="account_sign_in_title">サインイン</string>
+    <string name="account_use_existing">既存アカウントを使用</string>
+    <string name="account_create_link">アカウント作成</string>
+    <string name="field_server_url">アカウントサーバー URL</string>
+    <string name="field_username">ユーザー名</string>
+    <string name="field_username_placeholder">alice</string>
+    <string name="field_display_name">表示名</string>
+    <string name="field_display_name_placeholder">Alice</string>
+    <string name="field_password">パスワード</string>
+    <string name="status_working">処理中…</string>
+    <string name="action_register">登録</string>
+    <string name="action_sign_in">サインイン</string>
+    <string name="err_auth_failed">認証エラー</string>
+
+    <!-- Session & Multi-Session -->
+    <string name="session_connecting">ホストに接続中…</string>
+    <string name="session_ended_title">セッション終了</string>
+    <string name="action_close">閉じる</string>
+    <string name="session_mode_view">閲覧</string>
+    <string name="session_mode_control">操作</string>
+    <string name="session_status_connecting">接続中</string>
+    <string name="session_status_connected">接続済み</string>
+    <string name="session_status_closed">終了</string>
+    <string name="cd_controllers">コントローラー</string>
+    <string name="cd_collapse">折りたたむ</string>
+    <string name="cd_close_session">セッションを閉じる</string>
+    <string name="cd_mute">ミュート</string>
+    <string name="cd_unmute">ミュート解除</string>
+    <string name="cd_keyboard">キーボード</string>
+    <string name="cd_home">ホーム</string>
+    <string name="session_telemetry_title">セッション統計</string>
+    <string name="stat_e2e_latency">E2E 遅延</string>
+    <string name="stat_encode_decode">エンコード / デコード</string>
+    <string name="stat_rtt_loss">RTT / 損失</string>
+    <string name="stat_fps">FPS</string>
+    <string name="stat_bitrate">ビットレート</string>
+    <string name="stat_gamepads">ゲームパッド</string>
+    <string name="stat_gamepads_connected">%1$d 台接続中</string>
+    <string name="session_bitrate_target">目標ビットレート (Mbps)</string>
+    <string name="session_frame_pacing_label">フレームペーシング</string>
+    <string name="action_disconnect">切断</string>
+    <string name="err_session_start_failed">セッションの開始に失敗しました。</string>
+    <string name="sessions_active_label">アクティブなセッション (%1$d)</string>
+    <string name="session_switch_hint">セッション</string>
+    <string name="session_input_mode_label">入力モード</string>
+    <string name="input_mode_touch">タッチ</string>
+    <string name="input_mode_mouse">マウス</string>
+    <string name="mouse_mode_hint">1本指で移動/タップ · ダブルタップでドラッグ · 2本指で右クリック/スクロール</string>
+    <string name="mouse_btn_left">左</string>
+    <string name="mouse_btn_middle">中</string>
+    <string name="mouse_btn_right">右</string>
+    <string name="mouse_btn_drag">ドラッグ</string>
+    <string name="cd_switch_input_mode">入力モードを切り替え</string>
+    <string name="cd_expand_mouse_bar">マウスボタンを表示</string>
+    <string name="cd_minimize_mouse_bar">マウスボタンを非表示</string>
+</resources>

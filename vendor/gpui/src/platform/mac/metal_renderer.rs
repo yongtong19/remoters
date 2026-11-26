@@ -2,7 +2,7 @@ use super::metal_atlas::MetalAtlas;
 use crate::{
     AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, MonochromeSprite, PaintSurface,
     Path, Point, PolychromeSprite, PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size,
-    Surface, Underline, point, size,
+    Underline, point, size,
 };
 use anyhow::Result;
 use block::ConcreteBlock;
@@ -13,6 +13,7 @@ use cocoa::{
 };
 
 use core_foundation::base::TCFType;
+use core_graphics::color_space::{CGColorSpace, kCGColorSpaceExtendedSRGB};
 use core_video::{
     metal_texture::CVMetalTextureGetTexture, metal_texture_cache::CVMetalTextureCache,
     pixel_buffer::kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
@@ -37,6 +38,12 @@ const SHADERS_SOURCE_FILE: &str = include_str!(concat!(env!("OUT_DIR"), "/stitch
 // Use 4x MSAA, all devices support it.
 // https://developer.apple.com/documentation/metal/mtldevice/1433355-supportstexturesamplecount
 const PATH_SAMPLE_COUNT: u32 = 4;
+const RENDER_TARGET_PIXEL_FORMAT: MTLPixelFormat = MTLPixelFormat::RGBA16Float;
+
+const PIXEL_FORMAT_420F: u32 = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
+const PIXEL_FORMAT_420V: u32 = 0x34323076;
+const PIXEL_FORMAT_P010_VIDEO: u32 = 0x78343230;
+const PIXEL_FORMAT_P010_FULL: u32 = 0x78663230;
 
 pub type Context = Arc<Mutex<InstanceBufferPool>>;
 pub type Renderer = MetalRenderer;
@@ -109,6 +116,7 @@ pub(crate) struct MetalRenderer {
     monochrome_sprites_pipeline_state: metal::RenderPipelineState,
     polychrome_sprites_pipeline_state: metal::RenderPipelineState,
     surfaces_pipeline_state: metal::RenderPipelineState,
+    surfaces_hdr_pipeline_state: metal::RenderPipelineState,
     unit_vertices: metal::Buffer,
     #[allow(clippy::arc_with_non_send_sync)]
     instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
@@ -141,10 +149,14 @@ impl MetalRenderer {
 
         let layer = metal::MetalLayer::new();
         layer.set_device(&device);
-        layer.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+        layer.set_pixel_format(RENDER_TARGET_PIXEL_FORMAT);
         layer.set_opaque(false);
         layer.set_maximum_drawable_count(3);
         unsafe {
+            if let Some(colorspace) = CGColorSpace::create_with_name(kCGColorSpaceExtendedSRGB) {
+                let _: () = msg_send![&*layer, setColorspace: colorspace.as_ptr()];
+            }
+            let _: () = msg_send![&*layer, setWantsExtendedDynamicRangeContent: YES];
             let _: () = msg_send![&*layer, setAllowsNextDrawableTimeout: NO];
             let _: () = msg_send![&*layer, setNeedsDisplayOnBoundsChange: YES];
             let _: () = msg_send![
@@ -189,7 +201,7 @@ impl MetalRenderer {
             "paths_rasterization",
             "path_rasterization_vertex",
             "path_rasterization_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            RENDER_TARGET_PIXEL_FORMAT,
             PATH_SAMPLE_COUNT,
         );
         let path_sprites_pipeline_state = build_path_sprite_pipeline_state(
@@ -198,7 +210,7 @@ impl MetalRenderer {
             "path_sprites",
             "path_sprite_vertex",
             "path_sprite_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            RENDER_TARGET_PIXEL_FORMAT,
         );
         let shadows_pipeline_state = build_pipeline_state(
             &device,
@@ -206,7 +218,7 @@ impl MetalRenderer {
             "shadows",
             "shadow_vertex",
             "shadow_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            RENDER_TARGET_PIXEL_FORMAT,
         );
         let quads_pipeline_state = build_pipeline_state(
             &device,
@@ -214,7 +226,7 @@ impl MetalRenderer {
             "quads",
             "quad_vertex",
             "quad_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            RENDER_TARGET_PIXEL_FORMAT,
         );
         let underlines_pipeline_state = build_pipeline_state(
             &device,
@@ -222,7 +234,7 @@ impl MetalRenderer {
             "underlines",
             "underline_vertex",
             "underline_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            RENDER_TARGET_PIXEL_FORMAT,
         );
         let monochrome_sprites_pipeline_state = build_pipeline_state(
             &device,
@@ -230,7 +242,7 @@ impl MetalRenderer {
             "monochrome_sprites",
             "monochrome_sprite_vertex",
             "monochrome_sprite_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            RENDER_TARGET_PIXEL_FORMAT,
         );
         let polychrome_sprites_pipeline_state = build_pipeline_state(
             &device,
@@ -238,7 +250,7 @@ impl MetalRenderer {
             "polychrome_sprites",
             "polychrome_sprite_vertex",
             "polychrome_sprite_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            RENDER_TARGET_PIXEL_FORMAT,
         );
         let surfaces_pipeline_state = build_pipeline_state(
             &device,
@@ -246,7 +258,15 @@ impl MetalRenderer {
             "surfaces",
             "surface_vertex",
             "surface_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            RENDER_TARGET_PIXEL_FORMAT,
+        );
+        let surfaces_hdr_pipeline_state = build_pipeline_state(
+            &device,
+            &library,
+            "surfaces_hdr",
+            "surface_vertex",
+            "surface_hdr_fragment",
+            RENDER_TARGET_PIXEL_FORMAT,
         );
 
         let command_queue = device.new_command_queue();
@@ -267,6 +287,7 @@ impl MetalRenderer {
             monochrome_sprites_pipeline_state,
             polychrome_sprites_pipeline_state,
             surfaces_pipeline_state,
+            surfaces_hdr_pipeline_state,
             unit_vertices,
             instance_buffer_pool,
             sprite_atlas,
@@ -326,7 +347,7 @@ impl MetalRenderer {
         let texture_descriptor = metal::TextureDescriptor::new();
         texture_descriptor.set_width(size.width.0 as u64);
         texture_descriptor.set_height(size.height.0 as u64);
-        texture_descriptor.set_pixel_format(metal::MTLPixelFormat::BGRA8Unorm);
+        texture_descriptor.set_pixel_format(RENDER_TARGET_PIXEL_FORMAT);
         texture_descriptor
             .set_usage(metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead);
         self.path_intermediate_texture = Some(self.device.new_texture(&texture_descriptor));
@@ -1064,7 +1085,9 @@ impl MetalRenderer {
         viewport_size: Size<DevicePixels>,
         command_encoder: &metal::RenderCommandEncoderRef,
     ) -> bool {
-        command_encoder.set_render_pipeline_state(&self.surfaces_pipeline_state);
+        if surfaces.is_empty() {
+            return true;
+        }
         command_encoder.set_vertex_buffer(
             SurfaceInputIndex::Vertices as u64,
             Some(&self.unit_vertices),
@@ -1076,44 +1099,85 @@ impl MetalRenderer {
             &viewport_size as *const Size<DevicePixels> as *const _,
         );
 
+        let mut active_hdr_pipeline: Option<bool> = None;
+
         for surface in surfaces {
             let texture_size = size(
                 DevicePixels::from(surface.image_buffer.get_width() as i32),
                 DevicePixels::from(surface.image_buffer.get_height() as i32),
             );
 
-            assert_eq!(
-                surface.image_buffer.get_pixel_format(),
-                kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
-            );
-
-            let y_texture = self
-                .core_video_texture_cache
-                .create_texture_from_image(
-                    surface.image_buffer.as_concrete_TypeRef(),
-                    None,
+            let pix_fmt = surface.image_buffer.get_pixel_format();
+            let (is_hdr, is_full_range, y_format, cbcr_format) = match pix_fmt {
+                PIXEL_FORMAT_P010_VIDEO => (
+                    true,
+                    0u32,
+                    MTLPixelFormat::R16Unorm,
+                    MTLPixelFormat::RG16Unorm,
+                ),
+                PIXEL_FORMAT_P010_FULL => (
+                    true,
+                    1u32,
+                    MTLPixelFormat::R16Unorm,
+                    MTLPixelFormat::RG16Unorm,
+                ),
+                PIXEL_FORMAT_420V => (
+                    false,
+                    0u32,
                     MTLPixelFormat::R8Unorm,
-                    surface.image_buffer.get_width_of_plane(0),
-                    surface.image_buffer.get_height_of_plane(0),
-                    0,
-                )
-                .unwrap();
-            let cb_cr_texture = self
-                .core_video_texture_cache
-                .create_texture_from_image(
-                    surface.image_buffer.as_concrete_TypeRef(),
-                    None,
                     MTLPixelFormat::RG8Unorm,
-                    surface.image_buffer.get_width_of_plane(1),
-                    surface.image_buffer.get_height_of_plane(1),
-                    1,
-                )
-                .unwrap();
+                ),
+                PIXEL_FORMAT_420F => (
+                    false,
+                    1u32,
+                    MTLPixelFormat::R8Unorm,
+                    MTLPixelFormat::RG8Unorm,
+                ),
+                other => {
+                    log::error!("unsupported surface pixel format: {other:#x}");
+                    continue;
+                }
+            };
+
+            let Ok(y_texture) = self.core_video_texture_cache.create_texture_from_image(
+                surface.image_buffer.as_concrete_TypeRef(),
+                None,
+                y_format,
+                surface.image_buffer.get_width_of_plane(0),
+                surface.image_buffer.get_height_of_plane(0),
+                0,
+            ) else {
+                log::error!("failed to create Y Metal texture for surface pixel format {pix_fmt:#x}");
+                continue;
+            };
+            let Ok(cb_cr_texture) = self.core_video_texture_cache.create_texture_from_image(
+                surface.image_buffer.as_concrete_TypeRef(),
+                None,
+                cbcr_format,
+                surface.image_buffer.get_width_of_plane(1),
+                surface.image_buffer.get_height_of_plane(1),
+                1,
+            ) else {
+                log::error!(
+                    "failed to create CbCr Metal texture for surface pixel format {pix_fmt:#x}"
+                );
+                continue;
+            };
 
             align_offset(instance_offset);
-            let next_offset = *instance_offset + mem::size_of::<Surface>();
+            let next_offset = *instance_offset + mem::size_of::<SurfaceBounds>();
             if next_offset > instance_buffer.size {
                 return false;
+            }
+
+            if active_hdr_pipeline != Some(is_hdr) {
+                let pipeline_state = if is_hdr {
+                    &self.surfaces_hdr_pipeline_state
+                } else {
+                    &self.surfaces_pipeline_state
+                };
+                command_encoder.set_render_pipeline_state(pipeline_state);
+                active_hdr_pipeline = Some(is_hdr);
             }
 
             command_encoder.set_vertex_buffer(
@@ -1126,7 +1190,6 @@ impl MetalRenderer {
                 mem::size_of_val(&texture_size) as u64,
                 &texture_size as *const Size<DevicePixels> as *const _,
             );
-            // let y_texture = y_texture.get_texture().unwrap().
             command_encoder.set_fragment_texture(SurfaceInputIndex::YTexture as u64, unsafe {
                 let texture = CVMetalTextureGetTexture(y_texture.as_concrete_TypeRef());
                 Some(metal::TextureRef::from_ptr(texture as *mut _))
@@ -1135,6 +1198,11 @@ impl MetalRenderer {
                 let texture = CVMetalTextureGetTexture(cb_cr_texture.as_concrete_TypeRef());
                 Some(metal::TextureRef::from_ptr(texture as *mut _))
             });
+            command_encoder.set_fragment_bytes(
+                SurfaceInputIndex::IsFullRange as u64,
+                mem::size_of::<u32>() as u64,
+                &is_full_range as *const u32 as *const _,
+            );
 
             unsafe {
                 let buffer_contents = (instance_buffer.metal_buffer.contents() as *mut u8)
@@ -1210,7 +1278,7 @@ fn build_pipeline_state(
     color_attachment.set_source_rgb_blend_factor(metal::MTLBlendFactor::SourceAlpha);
     color_attachment.set_source_alpha_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
-    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::One);
+    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
 
     device
         .new_render_pipeline_state(&descriptor)
@@ -1244,7 +1312,7 @@ fn build_path_sprite_pipeline_state(
     color_attachment.set_source_rgb_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_source_alpha_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
-    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::One);
+    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
 
     device
         .new_render_pipeline_state(&descriptor)
@@ -1333,6 +1401,7 @@ enum SurfaceInputIndex {
     TextureSize = 3,
     YTexture = 4,
     CbCrTexture = 5,
+    IsFullRange = 6,
 }
 
 #[repr(C)]

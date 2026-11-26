@@ -160,6 +160,7 @@ impl VideoOutput {
             .try_send(ReceivedFrame {
                 codec,
                 rtp_timestamp,
+                host_latency_us: 0,
                 bytes,
             })
             .is_ok();

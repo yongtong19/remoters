@@ -1,0 +1,12 @@
+.git
+target
+packaging
+.DS_Store
+*.db
+*.db-wal
+*.db-shm
+*.sqlite*
+remoters-server-data.json
+crates/desktop/src
+crates/desktop/native
+crates/desktop/build.rs

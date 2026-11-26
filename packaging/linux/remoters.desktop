@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Remoters
+GenericName=Remote Desktop
+Comment=Low-latency remote desktop streaming, audio, clipboard, and controller sharing
+Exec=remoters
+Icon=remoters
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=remote;desktop;streaming;gamepad;controller;
+StartupWMClass=remoters
